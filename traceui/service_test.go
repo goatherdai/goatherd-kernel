@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/buchenberg/goatherd-kernel"
+	"github.com/goatherdai/goatherd-kernel"
 )
 
 func newMemStore(t *testing.T) *trace.SQLiteTraceStore {

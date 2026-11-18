@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/buchenberg/goatherd-kernel/testkit"
+	"github.com/goatherdai/goatherd-kernel/testkit"
 )
 
 type (

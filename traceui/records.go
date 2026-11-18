@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/buchenberg/goatherd-kernel"
+	"github.com/goatherdai/goatherd-kernel"
 )
 
 // recordsResponse is the /api/records payload.

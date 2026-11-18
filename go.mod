@@ -1,4 +1,4 @@
-module github.com/buchenberg/goatherd-kernel
+module github.com/goatherdai/goatherd-kernel
 
 go 1.21
 

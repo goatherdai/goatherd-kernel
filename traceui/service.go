@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"sync/atomic"
 
-	"github.com/buchenberg/goatherd-kernel"
+	"github.com/goatherdai/goatherd-kernel"
 )
 
 // maxThrough is the default ordinal cutoff: effectively none, mirroring the

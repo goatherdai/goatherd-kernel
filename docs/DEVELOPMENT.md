@@ -9,7 +9,7 @@ package layout. What remains is the v1.0 gate below, then the API freeze.
 > `sandbox`, `substrate`, `materialize`, `task`, `supervisor`) now lives in
 > `github.com/buchenberg/shepherd-runtime-go`. This repository is the kernel:
 > the trace package is the module root (`import
-> "github.com/buchenberg/goatherd-kernel"` is package `trace`), with
+> "github.com/goatherdai/goatherd-kernel"` is package `trace`), with
 > `traceui`, `testkit`, and `cmd/traceui` alongside it. The v1.0 gate below is
 > unaffected — the freeze is of the Ring-0-adjacent kernel surface, which is
 > exactly what this module retains.
