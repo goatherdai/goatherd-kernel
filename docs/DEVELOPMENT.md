@@ -7,7 +7,7 @@ package layout. What remains is the v1.0 gate below, then the API freeze.
 
 > **Runtime extraction.** The runtime layer (the root `shepherd` package,
 > `sandbox`, `substrate`, `materialize`, `task`, `supervisor`) now lives in
-> `github.com/buchenberg/shepherd-runtime-go`. This repository is the kernel:
+> `github.com/goatherdai/goatherd-kernel`. This repository is the kernel:
 > the trace package is the module root (`import
 > "github.com/goatherdai/goatherd-kernel"` is package `trace`), with
 > `traceui`, `testkit`, and `cmd/traceui` alongside it. The v1.0 gate below is

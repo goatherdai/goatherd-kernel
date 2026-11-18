@@ -143,7 +143,7 @@ trace  (module root)        the record model, canonical JSON, the SQLite store,
 The runtime packages — the root `shepherd` hub (scope tree, merge gate,
 settlement, recovery), `sandbox`/`sandbox/git`, `substrate`, `materialize`,
 `task`, and `supervisor` — live in
-[`github.com/buchenberg/shepherd-runtime-go`](https://github.com/buchenberg/shepherd-runtime-go).
+[`github.com/goatherdai/goatherd-kernel`](https://github.com/goatherdai/goatherd-kernel).
 
 ## Core Concepts
 
