@@ -12,6 +12,7 @@ import (
 
 	"fmt"
 
+	"sort"
 	"time"
 )
 
@@ -30,7 +31,7 @@ func (s *SQLiteTraceStore) Append(ctx context.Context, auth AppendContext, batch
 		return AppendReceipt{}, fmt.Errorf("begin transaction: %w", err)
 	}
 
-	receipt, isNew, err := s.appendInTx(tx, opCtx, batch)
+	receipt, isNew, err := s.appendInTx(ctx, tx, opCtx, batch)
 	if err != nil {
 		tx.Rollback()
 		return AppendReceipt{}, err
@@ -123,8 +124,22 @@ func (s *SQLiteTraceStore) PreviewRecordIDs(ctx context.Context, auth AppendCont
 	return s.previewFactIDs(ctx, batch, opCtx)
 }
 
-func (s *SQLiteTraceStore) appendInTx(tx *sql.Tx, ctx OperationContext, batch AppendBatch) (AppendReceipt, bool, error) {
+func (s *SQLiteTraceStore) appendInTx(goCtx context.Context, tx storeTx, ctx OperationContext, batch AppendBatch) (AppendReceipt, bool, error) {
 	if err := validateBatchShape(batch, ctx); err != nil {
+		return AppendReceipt{}, false, err
+	}
+	// Cross-instance coordination first, in a fixed order shared with
+	// garbage collection: GC computes its dead set from reads inside its
+	// transaction, so an append committing reachability mid-sweep must
+	// queue behind the sweep (and vice versa) rather than interleave.
+	if err := s.dialect.lockLivenessRecompute(goCtx, tx); err != nil {
+		return AppendReceipt{}, false, err
+	}
+	// Serialize same-intent first-time appends on concurrent backends: the
+	// loser of the lock finds the winner's committed receipt in the
+	// idempotency read below and replays it, instead of racing to a
+	// duplicate-key error. A no-op on serializing backends.
+	if err := s.dialect.lockAppendIntent(goCtx, tx, batch.AppendIntentID); err != nil {
 		return AppendReceipt{}, false, err
 	}
 	batchDigest, err := batchDigest(batch, ctx, s.substrateRef)
@@ -152,6 +167,46 @@ func (s *SQLiteTraceStore) appendInTx(tx *sql.Tx, ctx OperationContext, batch Ap
 		return AppendReceipt{}, false, fmt.Errorf("query append intent: %w", err)
 	}
 
+	// Lock the allocation points before reading owner state. Only owners
+	// that will actually allocate records join the lock set — a zero-draft
+	// group must not materialize an ordinal row, or an owner that never
+	// appended would look known to EvictOwnerPath on backends that
+	// materialize. kernel:witness joins when any group allocates, because
+	// the witness inserts below allocate its ordinals. Sorted owner order
+	// makes the lock order global, so concurrent batches with overlapping
+	// owners cannot deadlock.
+	lockSet := make([]string, 0, len(batch.Groups)+1)
+	seenOwner := make(map[string]bool, len(batch.Groups)+1)
+	hasDrafts := false
+	for _, group := range batch.Groups {
+		if len(group.FactDrafts) == 0 {
+			continue
+		}
+		hasDrafts = true
+		owner := groupOwner(group)
+		if !seenOwner[owner] {
+			seenOwner[owner] = true
+			lockSet = append(lockSet, owner)
+		}
+	}
+	if hasDrafts && !seenOwner[witnessTraceOwnerID] {
+		seenOwner[witnessTraceOwnerID] = true
+		lockSet = append(lockSet, witnessTraceOwnerID)
+	}
+	sort.Strings(lockSet)
+	if len(lockSet) > 0 {
+		// Materialize-and-lock: on concurrent backends a first append to a
+		// fresh owner pins the row before reading it, or two racers would
+		// both read ordinal 0. The tombstone check below runs inside this
+		// locked window, so an eviction committing concurrently either
+		// precedes the check (append refused) or follows it (tombstone
+		// insert waits on the append's row lock; entries and tombstone
+		// cannot both commit).
+		if err := s.dialect.lockOwnerOrdinalRows(goCtx, tx, lockSet); err != nil {
+			return AppendReceipt{}, false, err
+		}
+	}
+
 	// An evicted path takes no appends until ReopenOwnerPath deletes the
 	// tombstone. The check sits after the idempotency replay above: a batch
 	// that already committed must still return its stored receipt even
@@ -166,7 +221,7 @@ func (s *SQLiteTraceStore) appendInTx(tx *sql.Tx, ctx OperationContext, batch Ap
 	}
 
 	// Prepare append
-	contexts, witnessPlans, facts, receipt, err := s.prepareAppend(tx, batch, ctx)
+	contexts, witnessPlans, facts, receipt, err := s.prepareAppend(goCtx, tx, batch, ctx)
 	if err != nil {
 		return AppendReceipt{}, false, err
 	}
@@ -223,7 +278,7 @@ func (s *SQLiteTraceStore) appendInTx(tx *sql.Tx, ctx OperationContext, batch Ap
 	return receipt, true, nil // true = new append
 }
 
-func (s *SQLiteTraceStore) prepareAppend(tx *sql.Tx, batch AppendBatch, ctx OperationContext) (
+func (s *SQLiteTraceStore) prepareAppend(goCtx context.Context, tx storeTx, batch AppendBatch, ctx OperationContext) (
 	contexts []RetainedContext,
 	witnessPlans []witnessPlan,
 	facts []Record,
@@ -233,6 +288,15 @@ func (s *SQLiteTraceStore) prepareAppend(tx *sql.Tx, batch AppendBatch, ctx Oper
 	stagedIDs := make(map[string]bool)
 	localFactIDs := make(map[string]string)
 	stagedNext := make(map[string]int)
+
+	// Owner ordinal rows are already materialized and locked by the caller
+	// (appendInTx), inside the window the tombstone check shares. The
+	// commit-sequence meta row is locked here: the global counter is the
+	// last allocation point, after the (sorted) owner locks, completing a
+	// deadlock-free global order.
+	if err := s.dialect.lockCommitSeqRow(goCtx, tx); err != nil {
+		return nil, nil, nil, AppendReceipt{}, err
+	}
 
 	// Resolve starting ordinals
 	for _, group := range batch.Groups {
@@ -609,7 +673,7 @@ func nextCommitSeq(receipts []string) int {
 	return maxSeq
 }
 
-func (s *SQLiteTraceStore) validateCausalParentsTx(tx *sql.Tx, causedBy []string, stagedIDs map[string]bool) error {
+func (s *SQLiteTraceStore) validateCausalParentsTx(tx storeTx, causedBy []string, stagedIDs map[string]bool) error {
 	for _, id := range causedBy {
 		if stagedIDs[id] {
 			continue

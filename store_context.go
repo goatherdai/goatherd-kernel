@@ -182,7 +182,7 @@ func contextDraftJSON(rc *RetainedContext, substrateRef string) map[string]any {
 }
 
 func (s *SQLiteTraceStore) resolveGroupContextTx(
-	tx *sql.Tx, appendIntentID string, groupIndex int, group AppendGroup, ctx OperationContext,
+	tx storeTx, appendIntentID string, groupIndex int, group AppendGroup, ctx OperationContext,
 ) (RetainedContext, error) {
 	if group.RetainedContext != nil && group.RetainedContext.ContextID != "" {
 		if group.RetainedContext.SubstrateRef == "" {
@@ -222,13 +222,13 @@ func (s *SQLiteTraceStore) resolveGroupContextTx(
 	return newCtx, nil
 }
 
-func (s *SQLiteTraceStore) contextExistsTx(tx *sql.Tx, contextID string) bool {
+func (s *SQLiteTraceStore) contextExistsTx(tx storeTx, contextID string) bool {
 	var count int
 	tx.QueryRow("SELECT 1 FROM contexts WHERE context_id = ?", contextID).Scan(&count)
 	return count > 0
 }
 
-func (s *SQLiteTraceStore) readContextTx(tx *sql.Tx, contextID string) (RetainedContext, error) {
+func (s *SQLiteTraceStore) readContextTx(tx storeTx, contextID string) (RetainedContext, error) {
 	row := tx.QueryRow("SELECT * FROM contexts WHERE context_id = ?", contextID)
 	var ctx RetainedContext
 	var activeJSON, capJSON, semJSON, visJSON string
@@ -247,7 +247,7 @@ func (s *SQLiteTraceStore) readContextTx(tx *sql.Tx, contextID string) (Retained
 	return ctx, nil
 }
 
-func (s *SQLiteTraceStore) insertContextTx(tx *sql.Tx, ctx RetainedContext, appendIntentID string) error {
+func (s *SQLiteTraceStore) insertContextTx(tx storeTx, ctx RetainedContext, appendIntentID string) error {
 	_, err := tx.Exec(`
 		INSERT INTO contexts(context_id, active_binding_refs_json, capability_witness_refs_json,
 			semantic_environment_refs_json, visibility_policy_refs_json, substrate_ref, containment, append_intent_id)

@@ -110,7 +110,7 @@ func ownerEvicted(hasEvictedPaths bool, q rowQuerier, ownerID string) (bool, err
 }
 
 // ownerPathEvictedTx reports whether the eviction tombstone for ownerID exists.
-func (s *SQLiteTraceStore) ownerPathEvictedTx(tx *sql.Tx, ownerID string) (bool, error) {
+func (s *SQLiteTraceStore) ownerPathEvictedTx(tx storeTx, ownerID string) (bool, error) {
 	return ownerEvicted(s.hasEvictedPaths, tx, ownerID)
 }
 
@@ -140,6 +140,16 @@ func (s *SQLiteTraceStore) EvictOwnerPath(ctx context.Context, auth AppendContex
 		return EvictionReceipt{}, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Serialize against concurrent appends on this owner before reading any
+	// owner state: appends hold the same ordinal row across their tombstone
+	// check and entry inserts, so an eviction either commits entirely
+	// before one (append refused by the tombstone) or entirely after one
+	// (its entries are deletable) — never into the middle of it. The lock
+	// does not materialize: an owner with no allocation state stays unknown.
+	if err := s.dialect.lockExistingOwnerOrdinalRow(ctx, tx, ownerID); err != nil {
+		return EvictionReceipt{}, err
+	}
 
 	if evicted, err := s.ownerPathEvictedTx(tx, ownerID); err != nil {
 		return EvictionReceipt{}, err
@@ -291,6 +301,15 @@ func (s *SQLiteTraceStore) CollectGarbage(ctx context.Context, auth AppendContex
 	}
 	defer tx.Rollback()
 
+	// Hold the liveness-recompute lock for the whole sweep: the dead set is
+	// computed from reads inside this transaction, and an append committing
+	// reachability after those reads must wait rather than lose its path
+	// entries to the sweep below. Mirrored by appendInTx on concurrent
+	// backends; a no-op on serializing ones.
+	if err := s.dialect.lockLivenessRecompute(ctx, tx); err != nil {
+		return GarbageReceipt{}, err
+	}
+
 	receipt, err := s.collectGarbageInTx(ctx, tx)
 	if err != nil {
 		return GarbageReceipt{}, err
@@ -301,7 +320,7 @@ func (s *SQLiteTraceStore) CollectGarbage(ctx context.Context, auth AppendContex
 	return receipt, nil
 }
 
-func (s *SQLiteTraceStore) collectGarbageInTx(ctx context.Context, tx *sql.Tx) (GarbageReceipt, error) {
+func (s *SQLiteTraceStore) collectGarbageInTx(ctx context.Context, tx storeTx) (GarbageReceipt, error) {
 	receipt := GarbageReceipt{
 		SnapshotScan: "best-effort scan for sha256:<64hex> record ids embedded in checkpoint_snapshots.snapshot payloads",
 	}
@@ -349,7 +368,7 @@ func (s *SQLiteTraceStore) collectGarbageInTx(ctx context.Context, tx *sql.Tx) (
 	// The root witness is live unconditionally.
 	live[RootWitnessRecordIDMust()] = true
 
-	if err := markSnapshotLiveRecordsTx(tx, live, &receipt); err != nil {
+	if err := s.markSnapshotLiveRecordsTx(ctx, tx, live, &receipt); err != nil {
 		return GarbageReceipt{}, err
 	}
 
@@ -526,24 +545,25 @@ var sha256RecordIDPattern = regexp.MustCompile(`sha256:[0-9a-f]{64}`)
 
 // markSnapshotLiveRecordsTx extends the live set with records whose ids
 // appear in any checkpoint snapshot's opaque payload. The snapshot column
-// carries the caller's encoded payload with no contract on it, so the scan
-// is best-effort: one pass per snapshot extracting sha256-shaped ids, blind
-// to ids an encoding splits across escapes. A caller whose blobs are
-// binary-heavy must pin record ids itself (sidecar column or payload
-// convention) if checkpoint-aware liveness must be exact.
-func markSnapshotLiveRecordsTx(tx *sql.Tx, live map[string]bool, receipt *GarbageReceipt) error {
-	rows, err := tx.Query("SELECT CAST(snapshot AS TEXT) FROM checkpoint_snapshots")
+// carries the caller's encoded payload with no contract on it — it is
+// read raw as bytes and scanned in-process, so non-text payloads cannot
+// fail the sweep. The scan is best-effort: one pass per snapshot extracting
+// sha256-shaped ids, blind to ids an encoding splits across escapes. A
+// caller whose blobs are binary-heavy must pin record ids itself (sidecar
+// column or payload convention) if checkpoint-aware liveness must be exact.
+func (s *SQLiteTraceStore) markSnapshotLiveRecordsTx(ctx context.Context, tx storeTx, live map[string]bool, receipt *GarbageReceipt) error {
+	rows, err := tx.QueryContext(ctx, "SELECT snapshot FROM checkpoint_snapshots")
 	if err != nil {
 		return fmt.Errorf("scan checkpoint snapshots: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var text string
-		if err := rows.Scan(&text); err != nil {
-			return fmt.Errorf("scan checkpoint snapshot text: %w", err)
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return fmt.Errorf("scan checkpoint snapshot bytes: %w", err)
 		}
-		for _, id := range sha256RecordIDPattern.FindAllString(text, -1) {
-			live[id] = true
+		for _, id := range sha256RecordIDPattern.FindAll(payload, -1) {
+			live[string(id)] = true
 		}
 	}
 	return rows.Err()

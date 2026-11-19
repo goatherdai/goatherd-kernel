@@ -13,7 +13,8 @@ import (
 // raw databases to build migration fixtures.
 func TestNoBackendDialectLeakage(t *testing.T) {
 	allowed := map[string]bool{
-		"dialect_sqlite.go": true, // the SQLite dialect itself
+		"dialect_sqlite.go":   true, // the SQLite dialect
+		"dialect_postgres.go": true, // the PostgreSQL dialect
 	}
 	// Patterns that indicate backend-specific code or driver wiring.
 	// "INTO temp." / "FROM temp." catch backend-qualified staging-table

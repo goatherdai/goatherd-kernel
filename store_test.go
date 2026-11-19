@@ -2,10 +2,17 @@ package trace
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func newTestStore(t *testing.T) *SQLiteTraceStore {
@@ -19,8 +26,65 @@ func newTestStore(t *testing.T) *SQLiteTraceStore {
 	return store
 }
 
+// pgTestDSN resolves the law suite's optional PostgreSQL mode: when
+// KERNEL_PG_DSN names a server, every store the helpers open lands in a
+// fresh per-test schema on that server, so the same suite exercises both
+// backends. Run with:
+//
+//	KERNEL_PG_DSN=postgres://spike:spike@127.0.0.1:54329/spike?sslmode=disable go test .
+func pgTestDSN(t *testing.T) (string, bool) {
+	t.Helper()
+	base := os.Getenv("KERNEL_PG_DSN")
+	if base == "" {
+		return "", false
+	}
+	schema := fmt.Sprintf("laws_%d_%d", time.Now().UnixNano(), schemaSeq.Add(1))
+	admin, err := sql.Open("pgx", base)
+	if err != nil {
+		t.Fatalf("open admin connection for schema: %v", err)
+	}
+	defer admin.Close()
+	if _, err := admin.Exec("CREATE SCHEMA " + schema); err != nil {
+		t.Fatalf("create test schema %s: %v", schema, err)
+	}
+	t.Cleanup(func() {
+		admin, err := sql.Open("pgx", base)
+		if err != nil {
+			t.Logf("cleanup: open admin connection: %v", err)
+			return
+		}
+		defer admin.Close()
+		if _, err := admin.Exec("DROP SCHEMA " + schema + " CASCADE"); err != nil {
+			t.Logf("cleanup: drop schema %s: %v", schema, err)
+		}
+	})
+
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatalf("parse KERNEL_PG_DSN: %v", err)
+	}
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	return u.String(), true
+}
+
+var schemaSeq atomic.Int64
+
 func newMemStore(t *testing.T) *SQLiteTraceStore {
 	t.Helper()
+	if dsn, ok := pgTestDSN(t); ok {
+		ts, err := Open(StoreConfig{Backend: BackendPostgres, DSN: dsn})
+		if err != nil {
+			t.Fatalf("Open(Postgres): %v", err)
+		}
+		store, ok := ts.(*SQLiteTraceStore)
+		if !ok {
+			t.Fatalf("Open(Postgres) returned %T, want *SQLiteTraceStore", ts)
+		}
+		t.Cleanup(func() { store.Close(context.Background()) })
+		return store
+	}
 	store, err := NewSQLiteTraceStore(":memory:")
 	if err != nil {
 		t.Fatalf("NewSQLiteTraceStore: %v", err)

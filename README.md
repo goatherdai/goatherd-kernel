@@ -220,7 +220,8 @@ program against that and the storage family stays swappable:
 
 ```go
 store, err := trace.Open(trace.StoreConfig{
-    DSN:         path,               // file path, or ":memory:" for in-process
+    Backend:     trace.BackendPostgres,          // or trace.BackendSQLite (default)
+    DSN:         "postgres://user:pass@host/db?sslmode=disable",
     ReadOnly:    false,
     Bus:         bus,                // optional, replaces store.WithBus
     BlobLimit:   1 << 20,            // optional, replaces store.WithBlobLimit
@@ -228,11 +229,21 @@ store, err := trace.Open(trace.StoreConfig{
 })
 ```
 
-All SQLite-specific behavior lives behind one internal seam
-(`dialect_sqlite.go`): pragmas, catalog probes, conflict-clause syntax, and
-connection setup. New backends implement the `dialect` interface and inherit
-the store's laws; a CI gate test keeps backend-specific code from leaking
-outside the dialect files.
+All backend-specific behavior lives behind one internal seam
+(`dialect_sqlite.go`, `dialect_postgres.go`): connection setup, catalog
+probes, conflict-clause syntax, placeholder form, DDL translation, and the
+concurrency-control locks. New backends implement the `dialect` interface
+and inherit the store's laws; a CI gate test keeps backend-specific code
+from leaking outside the dialect files.
+
+The PostgreSQL dialect passes the full law suite and a concurrency gate
+(gapless ordinals and unique receipts under 8-goroutine appends through a
+real pool; concurrent same-intent appends replay idempotently). Exercise it
+yourself with the standard suite:
+
+```sh
+KERNEL_PG_DSN=postgres://user:pass@host/db?sslmode=disable go test .
+```
 
 Every store call takes a Go `context.Context` first — cancellation and
 deadlines reach the SQL layer — with the trace-authority context

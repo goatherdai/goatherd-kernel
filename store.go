@@ -6,7 +6,6 @@ package trace
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"sync"
@@ -56,7 +55,7 @@ const witnessTraceOwnerID = "kernel:witness"
 // what keeps the storage family swappable (see dialect.go, store_config.go).
 type SQLiteTraceStore struct {
 	path string
-	db   *sql.DB
+	db   storeDB
 	mu   sync.Mutex
 	// dialect is the backend seam resolved at open; every catalog probe,
 	// conflict-clause statement, and connection concern routes through it.
@@ -164,10 +163,11 @@ func openWithDialect(d dialect, cfg StoreConfig) (*SQLiteTraceStore, error) {
 		}
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	bound := d.bind(db)
 
 	s := &SQLiteTraceStore{
 		path:         cfg.DSN,
-		db:           db,
+		db:           bound,
 		dialect:      d,
 		bus:          cfg.Bus,
 		substrateRef: DefaultSubstrateRef,
