@@ -17,7 +17,6 @@ package trace
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -905,13 +904,11 @@ func TestProjectionFailsOnIncompatibleModeFilter(t *testing.T) {
 // test_restart_preserves_records_cuts_and_paths. The restart-idempotency half
 // is separately pinned by the conformance suite; this law is about durability
 // of what was already retained — records, published cuts and owner paths.
+// newRestartableStore runs the open/close/reopen sequence on the SQLite file
+// backend without KERNEL_PG_DSN and on the PostgreSQL dialect with it.
 func TestLawRestartPreservesRecordsCutsAndPaths(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "trace.sqlite")
+	store1, reopen := newRestartableStore(t)
 
-	store1, err := NewSQLiteTraceStore(path)
-	if err != nil {
-		t.Fatalf("first open: %v", err)
-	}
 	receipt := lawAppendDrafts(t, store1, "law:restart", "owner:restart", draft("step", Capture, nil))
 	cut, err := store1.PublishCut(context.Background(), lawAppend, FrontierSpec{
 		FrontierID:         "law:cut:restart",
@@ -926,11 +923,7 @@ func TestLawRestartPreservesRecordsCutsAndPaths(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	restarted, err := NewSQLiteTraceStore(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	defer restarted.Close(context.Background())
+	restarted := reopen()
 
 	prefix, err := restarted.ReadOwnerPrefix(context.Background(), lawReader, "owner:restart", 99, ModeBoth)
 	if err != nil {

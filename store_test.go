@@ -26,13 +26,12 @@ func newTestStore(t *testing.T) *SQLiteTraceStore {
 	return store
 }
 
-// pgTestDSN resolves the law suite's optional PostgreSQL mode: when
-// KERNEL_PG_DSN names a server, every store the helpers open lands in a
-// fresh per-test schema on that server, so the same suite exercises both
-// backends. Run with:
-//
-//	KERNEL_PG_DSN=postgres://spike:spike@127.0.0.1:54329/spike?sslmode=disable go test .
-func pgTestDSN(t *testing.T) (string, bool) {
+// pgSchemaDSN resolves the law suite's optional PostgreSQL mode: when
+// KERNEL_PG_DSN names a server, the store helpers open databases in a fresh
+// per-test schema on that server, so the same suite exercises both backends.
+// All opens built from the returned DSN land in the same schema; tests that
+// want isolation between opens must call this once per isolated store.
+func pgSchemaDSN(t *testing.T) (string, bool) {
 	t.Helper()
 	base := os.Getenv("KERNEL_PG_DSN")
 	if base == "" {
@@ -69,6 +68,12 @@ func pgTestDSN(t *testing.T) (string, bool) {
 	return u.String(), true
 }
 
+// pgTestDSN returns the per-test PostgreSQL DSN when KERNEL_PG_DSN is set.
+func pgTestDSN(t *testing.T) (string, bool) {
+	t.Helper()
+	return pgSchemaDSN(t)
+}
+
 var schemaSeq atomic.Int64
 
 func newMemStore(t *testing.T) *SQLiteTraceStore {
@@ -91,6 +96,41 @@ func newMemStore(t *testing.T) *SQLiteTraceStore {
 	}
 	t.Cleanup(func() { store.Close(context.Background()) })
 	return store
+}
+
+// newRestartableStore opens a store on durable storage and returns a function
+// that reopens the same storage, the way a process restart would. Without
+// KERNEL_PG_DSN this is a SQLite file; with it, a single fresh PostgreSQL
+// schema backs both opens, so restart law runs against the PostgreSQL
+// dialect too. Uses store must Close each open before reopening.
+func newRestartableStore(t *testing.T) (*SQLiteTraceStore, func() *SQLiteTraceStore) {
+	t.Helper()
+	dsn, pg := pgSchemaDSN(t)
+	if pg {
+		open := func(label string) *SQLiteTraceStore {
+			ts, err := Open(StoreConfig{Backend: BackendPostgres, DSN: dsn})
+			if err != nil {
+				t.Fatalf("Open(Postgres) %s: %v", label, err)
+			}
+			store, ok := ts.(*SQLiteTraceStore)
+			if !ok {
+				t.Fatalf("Open(Postgres) %s returned %T, want *SQLiteTraceStore", label, ts)
+			}
+			t.Cleanup(func() { store.Close(context.Background()) })
+			return store
+		}
+		return open("first open"), func() *SQLiteTraceStore { return open("reopen") }
+	}
+	path := filepath.Join(t.TempDir(), "trace.sqlite")
+	open := func(label string) *SQLiteTraceStore {
+		store, err := NewSQLiteTraceStore(path)
+		if err != nil {
+			t.Fatalf("NewSQLiteTraceStore %s: %v", label, err)
+		}
+		t.Cleanup(func() { store.Close(context.Background()) })
+		return store
+	}
+	return open("first open"), func() *SQLiteTraceStore { return open("reopen") }
 }
 
 var trustedAppend = AppendContext{
