@@ -118,3 +118,45 @@ jobs:
           ( cd "$(mktemp -d)" && go mod init verify >/dev/null && \
             go get "github.com/goatherdai/goatherd-kernel@${tag}" )
           echo "tag ${GITHUB_REF_NAME} resolves end-to-end from a clean module context"
+
+  postgres:
+    # The PostgreSQL dialect's law-suite run and the cross-instance
+    # concurrency gate (store_pg_concurrency_test.go). Without
+    # KERNEL_PG_DSN those tests skip, so this job is the only place the
+    # second backend is exercised on every push.
+    name: postgres
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: spike
+          POSTGRES_PASSWORD: spike
+          POSTGRES_DB: spike
+        ports:
+          - 54329:5432
+        options: >-
+          --health-cmd "pg_isready -U spike"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test (SQLite lane, no KERNEL_PG_DSN)
+        run: go test -count=1 ./...
+
+      - name: go test (PostgreSQL lane)
+        env:
+          KERNEL_PG_DSN: postgres://spike:spike@127.0.0.1:54329/spike?sslmode=disable
+        run: go test -count=1 -race ./

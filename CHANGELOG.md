@@ -4,7 +4,7 @@ Notable changes to `shepherd-kernel-go`. This project follows
 [Semantic Versioning](https://semver.org/); while pre-1.0, minor releases may
 contain breaking changes, which are called out below.
 
-## [Unreleased]
+## [v0.22.0] - 2026-11-19
 
 The trace store gained a storage-backend seam. New API: `Open(StoreConfig)`,
 `OpenSQLite(StoreConfig)`, the `TraceStore` interface (the backend contract),
