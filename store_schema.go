@@ -7,8 +7,6 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-
-	_ "modernc.org/sqlite"
 )
 
 // expectedTables lists every table createSchema builds. A read-only open
@@ -40,36 +38,25 @@ const retentionSchemaMarkerKey = "schema:evicted_paths"
 // open.
 const blobSchemaMarkerKey = "schema:named_blobs"
 
-// validateExistingSchema checks sqlite_master for the expected tables
+// validateExistingSchema checks the backend catalog for the expected tables
 // without running any DDL. It is the read-only counterpart of createSchema:
-// the schema is verified, never created.
-func (s *SQLiteTraceStore) validateExistingSchema() error {
-	rows, err := s.db.Query(`SELECT name FROM sqlite_master WHERE type = 'table'`)
+// the schema is verified, never created. On success it returns the catalog's
+// table set, which the opener uses to fix the optional-table flags
+// (evicted_paths, named_blobs) in the same read.
+func (s *SQLiteTraceStore) validateExistingSchema() (map[string]bool, error) {
+	tables, err := s.dialect.listTables(s.db)
 	if err != nil {
-		return fmt.Errorf("read schema: %w", err)
-	}
-	defer rows.Close()
-
-	have := make(map[string]bool, len(expectedTables))
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("scan schema table name: %w", err)
-		}
-		have[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read schema: %w", err)
+		return nil, fmt.Errorf("read schema: %w", err)
 	}
 
 	var missing []string
 	for _, table := range expectedTables {
-		if !have[table] {
+		if !tables[table] {
 			missing = append(missing, table)
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("not a trace database: missing tables: %s", strings.Join(missing, ", "))
+		return nil, fmt.Errorf("not a trace database: missing tables: %s", strings.Join(missing, ", "))
 	}
 
 	// Version gate for evicted_paths: databases created before the
@@ -79,10 +66,10 @@ func (s *SQLiteTraceStore) validateExistingSchema() error {
 	var marker string
 	err = s.db.QueryRow("SELECT value FROM meta WHERE key = ?", retentionSchemaMarkerKey).Scan(&marker)
 	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("read retention schema marker: %w", err)
+		return nil, fmt.Errorf("read retention schema marker: %w", err)
 	}
-	if err == nil && !have["evicted_paths"] {
-		return fmt.Errorf("not a trace database: missing table: evicted_paths")
+	if err == nil && !tables["evicted_paths"] {
+		return nil, fmt.Errorf("not a trace database: missing table: evicted_paths")
 	}
 
 	// Same version gate for named blobs: a pre-blob database carries no
@@ -90,21 +77,24 @@ func (s *SQLiteTraceStore) validateExistingSchema() error {
 	// marker and table exist together.
 	err = s.db.QueryRow("SELECT value FROM meta WHERE key = ?", blobSchemaMarkerKey).Scan(&marker)
 	if err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("read blob schema marker: %w", err)
+		return nil, fmt.Errorf("read blob schema marker: %w", err)
 	}
-	if err == nil && !have["named_blobs"] {
-		return fmt.Errorf("not a trace database: missing table: named_blobs")
+	if err == nil && !tables["named_blobs"] {
+		return nil, fmt.Errorf("not a trace database: missing table: named_blobs")
 	}
-	return nil
+	return tables, nil
 }
 
-func (s *SQLiteTraceStore) createSchema() error {
-	_, err := s.db.Exec(`
+// schemaDDL is the portable table set the store methods assume. It runs
+// through the dialect's execScript, so a backend controls how (and whether)
+// a multi-statement script executes; the statements themselves are ordinary
+// SQL — typed columns, CHECK constraints, foreign keys — shared across the
+// backend family.
+const schemaDDL = `
 		CREATE TABLE IF NOT EXISTS meta (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		);
-		INSERT OR IGNORE INTO meta(key, value) VALUES ('next_commit_seq', '0');
 
 		CREATE TABLE IF NOT EXISTS append_intents (
 			append_intent_id TEXT PRIMARY KEY,
@@ -214,13 +204,22 @@ func (s *SQLiteTraceStore) createSchema() error {
 			updated_at_unixnano INTEGER NOT NULL,
 			PRIMARY KEY (owner, kind, key)
 		);
-	`)
-	if err != nil {
+	`
+
+// createSchema builds the schema on a read-write open. The DDL runs through
+// the dialect's execScript; the meta seed and the schema markers go through
+// insertOrIgnore so the ignore-on-conflict semantics stay backend-owned.
+func (s *SQLiteTraceStore) createSchema() error {
+	if err := s.dialect.execScript(s.db, schemaDDL); err != nil {
 		return err
 	}
-	if _, err := s.db.Exec("INSERT OR IGNORE INTO meta(key, value) VALUES (?, '1')", retentionSchemaMarkerKey); err != nil {
+	seed := "INSERT INTO meta(key, value) VALUES (?, ?)"
+	if _, err := s.dialect.insertOrIgnore(s.db, seed, "next_commit_seq", "0"); err != nil {
 		return err
 	}
-	_, err = s.db.Exec("INSERT OR IGNORE INTO meta(key, value) VALUES (?, '1')", blobSchemaMarkerKey)
+	if _, err := s.dialect.insertOrIgnore(s.db, seed, retentionSchemaMarkerKey, "1"); err != nil {
+		return err
+	}
+	_, err := s.dialect.insertOrIgnore(s.db, seed, blobSchemaMarkerKey, "1")
 	return err
 }

@@ -186,7 +186,7 @@ func replayStoreVector(t *testing.T, v storeVector) {
 
 		// Checked before the append, because the digest is what decides whether the
 		// append is treated as a retry or as a conflict.
-		gotDigest, err := batchDigest(batch, trustedAppend.ToOperationContext(OpAppend))
+		gotDigest, err := batchDigest(batch, trustedAppend.ToOperationContext(OpAppend), DefaultSubstrateRef)
 		if err != nil {
 			t.Fatalf("batch %d batchDigest: %v", batchIndex, err)
 		}
@@ -384,7 +384,7 @@ func TestLegacyBatchDigestStillReplaysAsIdempotent(t *testing.T) {
 
 	opCtx := trustedAppend.ToOperationContext(OpAppend)
 	legacy := legacyBatchDigest(batch, opCtx)
-	current, err := batchDigest(batch, opCtx)
+	current, err := batchDigest(batch, opCtx, DefaultSubstrateRef)
 	if err != nil {
 		t.Fatalf("batchDigest: %v", err)
 	}

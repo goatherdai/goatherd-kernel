@@ -18,8 +18,10 @@ const maxThrough = math.MaxInt
 
 // Config builds a Service.
 type Config struct {
-	// Store is the trace store to project. Required.
-	Store *trace.SQLiteTraceStore
+	// Store is the trace store to project. Required. It is the backend
+	// contract: any TraceStore implementation works, and the read-only
+	// opener's store is the typical value.
+	Store trace.TraceStore
 
 	// Bus, when set, enables the live /api/events stream. It must be the
 	// same bus the store publishes through (Store.WithBus), which happens
@@ -37,7 +39,7 @@ type Config struct {
 
 // Service is the read-only HTTP projection of a trace store.
 type Service struct {
-	store   *trace.SQLiteTraceStore
+	store   trace.TraceStore
 	bus     *trace.EffectBus
 	origins []string
 }

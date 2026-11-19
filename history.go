@@ -98,8 +98,9 @@ func ProjectEffectiveHistory(rootSlice Slice, rootTraceOwnerID string, childSlic
 }
 
 // ProjectEffectiveHistoryFromStore resolves the root frontier and each
-// active child's frontier, then projects.
-func ProjectEffectiveHistoryFromStore(ctx context.Context, store *SQLiteTraceStore, readContext ReadContext, cutoff Frontier) (*EffectiveHistory, error) {
+// active child's frontier, then projects. store is the backend contract, so
+// this projection runs against any TraceStore implementation.
+func ProjectEffectiveHistoryFromStore(ctx context.Context, store TraceStore, readContext ReadContext, cutoff Frontier) (*EffectiveHistory, error) {
 	rootSlice, err := store.ResolveFrontier(ctx, readContext, cutoff.FrontierID, ModeBoth)
 	if err != nil {
 		return nil, err

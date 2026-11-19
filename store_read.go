@@ -13,8 +13,6 @@ import (
 	"fmt"
 
 	"strings"
-
-	_ "modernc.org/sqlite"
 )
 
 // ReadFact reads one retained fact.

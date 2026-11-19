@@ -129,7 +129,7 @@ func ProjectExecutionRelations(traceSlice Slice, parentTraceOwnerID string) ([]E
 
 // ProjectExecutionRelationsFromStore resolves a frontier and projects the
 // parent-owned relations it covers.
-func ProjectExecutionRelationsFromStore(ctx context.Context, store *SQLiteTraceStore, readContext ReadContext, cutoff Frontier) ([]ExecutionRelation, error) {
+func ProjectExecutionRelationsFromStore(ctx context.Context, store TraceStore, readContext ReadContext, cutoff Frontier) ([]ExecutionRelation, error) {
 	slice, err := store.ResolveFrontier(ctx, readContext, cutoff.FrontierID, ModeBoth)
 	if err != nil {
 		return nil, err

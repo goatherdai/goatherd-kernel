@@ -13,8 +13,6 @@ import (
 	"fmt"
 
 	"time"
-
-	_ "modernc.org/sqlite"
 )
 
 // Append appends a semantic batch or returns the prior receipt for its intent.
@@ -129,7 +127,7 @@ func (s *SQLiteTraceStore) appendInTx(tx *sql.Tx, ctx OperationContext, batch Ap
 	if err := validateBatchShape(batch, ctx); err != nil {
 		return AppendReceipt{}, false, err
 	}
-	batchDigest, err := batchDigest(batch, ctx)
+	batchDigest, err := batchDigest(batch, ctx, s.substrateRef)
 	if err != nil {
 		return AppendReceipt{}, false, err
 	}
@@ -551,7 +549,11 @@ func legacyBatchDigest(batch AppendBatch, ctx OperationContext) string {
 // two could never agree, and that matters beyond bookkeeping: the conflict check is
 // part of the ABI, so a batch one store rejects as a conflicting reuse the other
 // would accept.
-func batchDigest(batch AppendBatch, ctx OperationContext) (string, error) {
+//
+// substrateRef is the store's configured default substrate reference; it fills
+// the retained-context draft for groups that carry no explicit context, and it
+// participates in the digest exactly as the id derivation does.
+func batchDigest(batch AppendBatch, ctx OperationContext, substrateRef string) (string, error) {
 	groups := make([]any, 0, len(batch.Groups))
 	for _, g := range batch.Groups {
 		drafts := make([]any, 0, len(g.FactDrafts))
@@ -572,7 +574,7 @@ func batchDigest(batch AppendBatch, ctx OperationContext) (string, error) {
 		}
 		groups = append(groups, map[string]any{
 			"trace_owner_id":   g.TraceOwnerID,
-			"retained_context": contextDraftJSON(g.RetainedContext),
+			"retained_context": contextDraftJSON(g.RetainedContext, substrateRef),
 			"causal_parents":   NonNilStrings(g.CausalParents),
 			"fact_drafts":      drafts,
 		})

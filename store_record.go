@@ -8,8 +8,6 @@ import (
 	"database/sql"
 
 	"fmt"
-
-	_ "modernc.org/sqlite"
 )
 
 func scanRecord(row *sql.Row) (Record, error) {

@@ -10,8 +10,6 @@ import (
 	"encoding/json"
 
 	"fmt"
-
-	_ "modernc.org/sqlite"
 )
 
 type witnessPlan struct {

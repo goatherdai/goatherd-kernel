@@ -187,7 +187,7 @@ func FailExecutionBatch(appendIntentID, executionID, errMsg string, causedBy []s
 // over the Ring 0 frontier ABI. The terminal-frontier law is enforced here:
 // the through-fact must be payload-visible and must carry a completed or
 // failed schema; anything else fails before the frontier exists.
-func PublishExecutionFrontier(ctx context.Context, store *SQLiteTraceStore, auth AppendContext, frontierID, targetExecutionID, throughFactID, publisherExecutionID, appendIntentID string, causedBy []string) (Frontier, error) {
+func PublishExecutionFrontier(ctx context.Context, store TraceStore, auth AppendContext, frontierID, targetExecutionID, throughFactID, publisherExecutionID, appendIntentID string, causedBy []string) (Frontier, error) {
 	visible, err := store.ReadFact(ctx, executionReadContext, throughFactID)
 	if err != nil {
 		return Frontier{}, fmt.Errorf("read through fact: %w", err)
@@ -269,7 +269,7 @@ func ProjectExecution(traceSlice Slice, targetTraceOwnerID string, cutoff *Front
 }
 
 // ProjectExecutionFromStore resolves a frontier and projects an execution.
-func ProjectExecutionFromStore(ctx context.Context, store *SQLiteTraceStore, readContext ReadContext, cutoff Frontier) (*Execution, error) {
+func ProjectExecutionFromStore(ctx context.Context, store TraceStore, readContext ReadContext, cutoff Frontier) (*Execution, error) {
 	slice, err := store.ResolveFrontier(ctx, readContext, cutoff.FrontierID, ModeBoth)
 	if err != nil {
 		return nil, err
