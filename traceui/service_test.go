@@ -553,3 +553,14 @@ func TestConfigValidation(t *testing.T) {
 		t.Error("New without store should fail")
 	}
 }
+
+// A typed-nil concrete store inside the interface must be rejected like a
+// missing store: it passes a bare `== nil` check but panics on first use.
+func TestNewRejectsTypedNilStore(t *testing.T) {
+	if _, err := New(Config{Store: (*trace.SQLiteTraceStore)(nil)}); err == nil {
+		t.Fatalf("New with typed-nil store succeeded, want error")
+	}
+	if _, err := New(Config{}); err == nil {
+		t.Fatalf("New without a store succeeded, want error")
+	}
+}

@@ -2,6 +2,7 @@ package trace
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -39,7 +40,7 @@ func TestOpenDefaultsToSQLiteAndServesTrace(t *testing.T) {
 }
 
 func TestOpenUnknownBackendFailsLoudly(t *testing.T) {
-	_, err := Open(StoreConfig{Backend: "boltdb", DSN: filepath.Join(t.TempDir(), "x.sqlite")})
+	store, err := Open(StoreConfig{Backend: "boltdb", DSN: filepath.Join(t.TempDir(), "x.sqlite")})
 	if err == nil {
 		t.Fatalf("Open(unknown backend) succeeded, want error")
 	}
@@ -49,6 +50,44 @@ func TestOpenUnknownBackendFailsLoudly(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err.Error(), want)
 		}
+	}
+	// A failed open must hand back a nil interface — not a typed-nil
+	// concrete pointer wrapped in the interface, which would make
+	// `store != nil` true and crash cleanup paths that trust it.
+	if store != nil {
+		t.Errorf("Open(unknown backend) returned non-nil store %v alongside the error", store)
+	}
+
+	// The same contract on a real backend failure: a read-only open of a
+	// missing database fails, and the interface must be nil.
+	if store, err := Open(StoreConfig{DSN: filepath.Join(t.TempDir(), "missing.sqlite"), ReadOnly: true}); err == nil || store != nil {
+		t.Errorf("Open(failed) = (%v, %v), want (nil, error)", store, err)
+	}
+}
+
+// TestPersistCheckpointBlobHonorsCanceledContext pins the context contract
+// the dialect must preserve: a canceled caller context aborts the statement
+// instead of committing the snapshot anyway.
+func TestPersistCheckpointBlobHonorsCanceledContext(t *testing.T) {
+	store := newMemStore(t)
+	defer store.Close(context.Background())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // canceled before the call: the write must not happen
+
+	err := PersistCheckpointBlob(ctx, store, "cp:x", "scope:x", 1, WorkspaceState{}, []byte("snapshot"), time.Now())
+	if err == nil {
+		t.Fatalf("PersistCheckpointBlob with canceled context succeeded, want error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error %v does not wrap context.Canceled", err)
+	}
+	blobs, corrupt, err := LoadCheckpointBlobs(context.Background(), store)
+	if err != nil {
+		t.Fatalf("LoadCheckpointBlobs: %v", err)
+	}
+	if len(blobs) != 0 || len(corrupt) != 0 {
+		t.Errorf("canceled checkpoint persisted anyway: %d blobs, %d corrupt", len(blobs), len(corrupt))
 	}
 }
 

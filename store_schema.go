@@ -4,6 +4,7 @@ package trace
 // migrations the store methods assume.
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -44,7 +45,7 @@ const blobSchemaMarkerKey = "schema:named_blobs"
 // table set, which the opener uses to fix the optional-table flags
 // (evicted_paths, named_blobs) in the same read.
 func (s *SQLiteTraceStore) validateExistingSchema() (map[string]bool, error) {
-	tables, err := s.dialect.listTables(s.db)
+	tables, err := s.dialect.listTables(context.Background(), s.db)
 	if err != nil {
 		return nil, fmt.Errorf("read schema: %w", err)
 	}
@@ -209,17 +210,20 @@ const schemaDDL = `
 // createSchema builds the schema on a read-write open. The DDL runs through
 // the dialect's execScript; the meta seed and the schema markers go through
 // insertOrIgnore so the ignore-on-conflict semantics stay backend-owned.
+// Open-time work: there is no caller context, matching the legacy
+// constructors, so the statements run under context.Background().
 func (s *SQLiteTraceStore) createSchema() error {
-	if err := s.dialect.execScript(s.db, schemaDDL); err != nil {
+	ctx := context.Background()
+	if err := s.dialect.execScript(ctx, s.db, schemaDDL); err != nil {
 		return err
 	}
 	seed := "INSERT INTO meta(key, value) VALUES (?, ?)"
-	if _, err := s.dialect.insertOrIgnore(s.db, seed, "next_commit_seq", "0"); err != nil {
+	if _, err := s.dialect.insertOrIgnore(ctx, s.db, seed, "next_commit_seq", "0"); err != nil {
 		return err
 	}
-	if _, err := s.dialect.insertOrIgnore(s.db, seed, retentionSchemaMarkerKey, "1"); err != nil {
+	if _, err := s.dialect.insertOrIgnore(ctx, s.db, seed, retentionSchemaMarkerKey, "1"); err != nil {
 		return err
 	}
-	_, err := s.dialect.insertOrIgnore(s.db, seed, blobSchemaMarkerKey, "1")
+	_, err := s.dialect.insertOrIgnore(ctx, s.db, seed, blobSchemaMarkerKey, "1")
 	return err
 }

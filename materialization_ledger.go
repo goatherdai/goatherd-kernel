@@ -76,6 +76,7 @@ func RecordCompletedMaterialization(store *SQLiteTraceStore, intentID, digest, r
 	defer store.mu.Unlock()
 
 	res, err := store.dialect.insertOrIgnore(
+		context.Background(),
 		store.db,
 		"INSERT INTO materialization_intents(materialize_intent_id, request_digest, receipt_json) VALUES (?, ?, ?)",
 		intentID, digest, receiptJSON,

@@ -16,6 +16,9 @@ func TestNoBackendDialectLeakage(t *testing.T) {
 		"dialect_sqlite.go": true, // the SQLite dialect itself
 	}
 	// Patterns that indicate backend-specific code or driver wiring.
+	// "INTO temp." / "FROM temp." catch backend-qualified staging-table
+	// references: the dialect contract gives staging tables unqualified
+	// names, and where they live is the dialect's business.
 	patterns := []string{
 		"modernc.org/sqlite",
 		"sqlite_master",
@@ -24,6 +27,8 @@ func TestNoBackendDialectLeakage(t *testing.T) {
 		"journal_mode",
 		"busy_timeout",
 		"sql.Open(",
+		"INTO temp.",
+		"FROM temp.",
 	}
 
 	entries, err := os.ReadDir(".")

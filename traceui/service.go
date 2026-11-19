@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"reflect"
 	"sync/atomic"
 
 	"github.com/goatherdai/goatherd-kernel"
@@ -51,9 +52,27 @@ type Service struct {
 // the first handler's deferred unsubscribe could then delete the second.
 var subSeq atomic.Uint64
 
+// isNilStore reports whether a configured store is missing. The plain
+// interface nil check is not enough: a typed-nil concrete pointer (for
+// example a store from a failed open, before it was a nil interface) sits
+// in the interface as a non-nil value and would pass a bare == nil test,
+// then panic on first use.
+func isNilStore(s trace.TraceStore) bool {
+	if s == nil {
+		return true
+	}
+	v := reflect.ValueOf(s)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
 // New validates the configuration and returns the service.
 func New(cfg Config) (*Service, error) {
-	if cfg.Store == nil {
+	if isNilStore(cfg.Store) {
 		return nil, fmt.Errorf("traceui: store is required")
 	}
 	return &Service{

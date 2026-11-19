@@ -57,8 +57,16 @@ type StoreConfig struct {
 // Open opens a trace store configured by cfg, returning the backend
 // contract. This is the backend-neutral entry point: callers program against
 // TraceStore and the StoreConfig fields, not the driver.
+//
+// On failure the returned store is a nil interface — never a typed-nil
+// concrete pointer wrapped in the interface — so `store == nil` behaves the
+// way callers expect on error paths.
 func Open(cfg StoreConfig) (TraceStore, error) {
-	return OpenSQLite(cfg)
+	s, err := OpenSQLite(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // OpenSQLite opens the SQLite-backed store per cfg, returning the concrete

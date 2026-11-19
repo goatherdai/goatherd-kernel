@@ -7,6 +7,7 @@ package trace
 // through the dialect interface (see dialect.go).
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net/url"
@@ -70,8 +71,8 @@ func (sqliteDialect) open(dsn string, readOnly bool) (*sql.DB, error) {
 	return db, nil
 }
 
-func (sqliteDialect) listTables(q queryer) (map[string]bool, error) {
-	rows, err := q.Query(`SELECT name FROM sqlite_master WHERE type = 'table'`)
+func (sqliteDialect) listTables(ctx context.Context, q queryer) (map[string]bool, error) {
+	rows, err := q.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type = 'table'`)
 	if err != nil {
 		return nil, err
 	}
@@ -88,36 +89,36 @@ func (sqliteDialect) listTables(q queryer) (map[string]bool, error) {
 	return tables, rows.Err()
 }
 
-func (sqliteDialect) insertOrIgnore(q queryer, stmt string, args ...any) (sql.Result, error) {
+func (sqliteDialect) insertOrIgnore(ctx context.Context, q queryer, stmt string, args ...any) (sql.Result, error) {
 	rewritten, err := rewriteInsert(stmt, "OR IGNORE")
 	if err != nil {
 		return nil, err
 	}
-	return q.Exec(rewritten, args...)
+	return q.ExecContext(ctx, rewritten, args...)
 }
 
-func (sqliteDialect) insertOrReplace(q queryer, stmt string, conflictCols []string, args ...any) (sql.Result, error) {
+func (sqliteDialect) insertOrReplace(ctx context.Context, q queryer, stmt string, conflictCols []string, args ...any) (sql.Result, error) {
 	rewritten, err := rewriteInsert(stmt, "OR REPLACE")
 	if err != nil {
 		return nil, err
 	}
-	return q.Exec(rewritten, args...)
+	return q.ExecContext(ctx, rewritten, args...)
 }
 
-func (sqliteDialect) execScript(db *sql.DB, script string) error {
-	_, err := db.Exec(script)
+func (sqliteDialect) execScript(ctx context.Context, db *sql.DB, script string) error {
+	_, err := db.ExecContext(ctx, script)
 	return err
 }
 
-func (sqliteDialect) createTempTableIfNotExists(q queryer, name string, columnDDL string) error {
-	_, err := q.Exec("CREATE TEMP TABLE IF NOT EXISTS " + name + "(" + columnDDL + ")")
+func (sqliteDialect) createTempTableIfNotExists(ctx context.Context, q queryer, name string, columnDDL string) error {
+	_, err := q.ExecContext(ctx, "CREATE TEMP TABLE IF NOT EXISTS "+name+"("+columnDDL+")")
 	return err
 }
 
-func (sqliteDialect) dropTempTableIfExists(q queryer, name string) error {
+func (sqliteDialect) dropTempTableIfExists(ctx context.Context, q queryer, name string) error {
 	// The temp schema qualifier resolves against this connection's temp
 	// tables without colliding with a persistent table of the same name.
-	_, err := q.Exec("DROP TABLE IF EXISTS temp." + name)
+	_, err := q.ExecContext(ctx, "DROP TABLE IF EXISTS temp."+name)
 	return err
 }
 

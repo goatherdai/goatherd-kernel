@@ -16,12 +16,12 @@ func TestInsertOrIgnoreRowsAffected(t *testing.T) {
 
 	// The schema seeds meta via insertOrIgnore, so the table exists; use a
 	// scratch table with the same shape as the callers use.
-	if err := store.dialect.execScript(store.db, `CREATE TABLE IF NOT EXISTS gate_scratch(k TEXT PRIMARY KEY, v TEXT)`); err != nil {
+	if err := store.dialect.execScript(context.Background(), store.db, `CREATE TABLE IF NOT EXISTS gate_scratch(k TEXT PRIMARY KEY, v TEXT)`); err != nil {
 		t.Fatalf("create scratch table: %v", err)
 	}
 	stmt := "INSERT INTO gate_scratch(k, v) VALUES (?, ?)"
 
-	res, err := store.dialect.insertOrIgnore(store.db, stmt, "k1", "v1")
+	res, err := store.dialect.insertOrIgnore(context.Background(), store.db, stmt, "k1", "v1")
 	if err != nil {
 		t.Fatalf("first insertOrIgnore: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestInsertOrIgnoreRowsAffected(t *testing.T) {
 
 	// A conflicting key must be a silent no-op reporting zero rows: the
 	// materialization ledger decides replays off exactly this signal.
-	res, err = store.dialect.insertOrIgnore(store.db, stmt, "k1", "other")
+	res, err = store.dialect.insertOrIgnore(context.Background(), store.db, stmt, "k1", "other")
 	if err != nil {
 		t.Fatalf("conflicting insertOrIgnore: %v", err)
 	}
@@ -49,17 +49,17 @@ func TestInsertOrReplaceReplacesRow(t *testing.T) {
 	store := newMemStore(t)
 	defer store.Close(context.Background())
 
-	if err := store.dialect.execScript(store.db, `CREATE TABLE IF NOT EXISTS gate_scratch(k TEXT PRIMARY KEY, v TEXT)`); err != nil {
+	if err := store.dialect.execScript(context.Background(), store.db, `CREATE TABLE IF NOT EXISTS gate_scratch(k TEXT PRIMARY KEY, v TEXT)`); err != nil {
 		t.Fatalf("create scratch table: %v", err)
 	}
 	stmt := "INSERT INTO gate_scratch(k, v) VALUES (?, ?)"
 
 	// The checkpoint persistence path rewrites a checkpoint by (id): the
 	// second write must fully replace the first.
-	if _, err := store.dialect.insertOrReplace(store.db, stmt, []string{"k"}, "k1", "old"); err != nil {
+	if _, err := store.dialect.insertOrReplace(context.Background(), store.db, stmt, []string{"k"}, "k1", "old"); err != nil {
 		t.Fatalf("first insertOrReplace: %v", err)
 	}
-	if _, err := store.dialect.insertOrReplace(store.db, stmt, []string{"k"}, "k1", "new"); err != nil {
+	if _, err := store.dialect.insertOrReplace(context.Background(), store.db, stmt, []string{"k"}, "k1", "new"); err != nil {
 		t.Fatalf("second insertOrReplace: %v", err)
 	}
 
@@ -84,7 +84,7 @@ func TestConflictClauseRewriteRejectsNonPortableStatements(t *testing.T) {
 		"INSERT OR REPLACE INTO gate_scratch(k, v) VALUES (1, 1)",
 	}
 	for _, stmt := range cases {
-		if _, err := store.dialect.insertOrIgnore(store.db, stmt); err == nil {
+		if _, err := store.dialect.insertOrIgnore(context.Background(), store.db, stmt); err == nil {
 			t.Errorf("insertOrIgnore(%q) succeeded, want error", stmt)
 		}
 	}
@@ -94,7 +94,7 @@ func TestListTablesReflectsSchema(t *testing.T) {
 	store := newMemStore(t)
 	defer store.Close(context.Background())
 
-	tables, err := store.dialect.listTables(store.db)
+	tables, err := store.dialect.listTables(context.Background(), store.db)
 	if err != nil {
 		t.Fatalf("listTables: %v", err)
 	}
@@ -120,14 +120,14 @@ func TestTempStagingTablesThroughDialect(t *testing.T) {
 
 	// Drop-before-create must tolerate absence, mirroring the GC sweep's
 	// recovery from a skipped prior cleanup.
-	if err := store.dialect.dropTempTableIfExists(tx, gcDeadRecordsTable); err != nil {
+	if err := store.dialect.dropTempTableIfExists(context.Background(), tx, gcDeadRecordsTable); err != nil {
 		t.Fatalf("drop of absent temp table: %v", err)
 	}
-	if err := store.dialect.createTempTableIfNotExists(tx, gcDeadRecordsTable, "record_id TEXT PRIMARY KEY"); err != nil {
+	if err := store.dialect.createTempTableIfNotExists(context.Background(), tx, gcDeadRecordsTable, "record_id TEXT PRIMARY KEY"); err != nil {
 		t.Fatalf("create temp table: %v", err)
 	}
 	// Idempotent re-create.
-	if err := store.dialect.createTempTableIfNotExists(tx, gcDeadRecordsTable, "record_id TEXT PRIMARY KEY"); err != nil {
+	if err := store.dialect.createTempTableIfNotExists(context.Background(), tx, gcDeadRecordsTable, "record_id TEXT PRIMARY KEY"); err != nil {
 		t.Fatalf("re-create temp table: %v", err)
 	}
 	if _, err := tx.Exec("INSERT INTO " + gcDeadRecordsTable + "(record_id) VALUES ('sha256:00')"); err != nil {
@@ -137,7 +137,7 @@ func TestTempStagingTablesThroughDialect(t *testing.T) {
 	if err := tx.QueryRow("SELECT COUNT(*) FROM " + gcDeadRecordsTable).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("staged rows = %d (%v), want 1", n, err)
 	}
-	if err := store.dialect.dropTempTableIfExists(tx, gcDeadRecordsTable); err != nil {
+	if err := store.dialect.dropTempTableIfExists(context.Background(), tx, gcDeadRecordsTable); err != nil {
 		t.Fatalf("final drop: %v", err)
 	}
 }

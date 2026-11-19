@@ -291,7 +291,7 @@ func (s *SQLiteTraceStore) CollectGarbage(ctx context.Context, auth AppendContex
 	}
 	defer tx.Rollback()
 
-	receipt, err := s.collectGarbageInTx(tx)
+	receipt, err := s.collectGarbageInTx(ctx, tx)
 	if err != nil {
 		return GarbageReceipt{}, err
 	}
@@ -301,7 +301,7 @@ func (s *SQLiteTraceStore) CollectGarbage(ctx context.Context, auth AppendContex
 	return receipt, nil
 }
 
-func (s *SQLiteTraceStore) collectGarbageInTx(tx *sql.Tx) (GarbageReceipt, error) {
+func (s *SQLiteTraceStore) collectGarbageInTx(ctx context.Context, tx *sql.Tx) (GarbageReceipt, error) {
 	receipt := GarbageReceipt{
 		SnapshotScan: "best-effort scan for sha256:<64hex> record ids embedded in checkpoint_snapshots.snapshot payloads",
 	}
@@ -435,15 +435,18 @@ func (s *SQLiteTraceStore) collectGarbageInTx(tx *sql.Tx) (GarbageReceipt, error
 	if len(dead) > 0 {
 		// Temp staging lives on the pooled connection: drop-then-create makes
 		// the sweep safe even if a previous run's cleanup was skipped.
-		if err := s.dialect.dropTempTableIfExists(tx, gcDeadRecordsTable); err != nil {
+		if err := s.dialect.dropTempTableIfExists(ctx, tx, gcDeadRecordsTable); err != nil {
 			return GarbageReceipt{}, fmt.Errorf("clear staged dead records: %w", err)
 		}
-		if err := s.dialect.createTempTableIfNotExists(tx, gcDeadRecordsTable, "record_id TEXT PRIMARY KEY"); err != nil {
+		if err := s.dialect.createTempTableIfNotExists(ctx, tx, gcDeadRecordsTable, "record_id TEXT PRIMARY KEY"); err != nil {
 			return GarbageReceipt{}, fmt.Errorf("stage dead records: %w", err)
 		}
-		defer func() { _ = s.dialect.dropTempTableIfExists(tx, gcDeadRecordsTable) }()
+		defer func() { _ = s.dialect.dropTempTableIfExists(ctx, tx, gcDeadRecordsTable) }()
 		for _, id := range dead {
-			if _, err := tx.Exec("INSERT INTO temp.dead_records(record_id) VALUES (?)", id); err != nil {
+			// The staging table is referenced by its unqualified name, per
+			// the dialect contract: where the backend materializes the temp
+			// table is the dialect's business, not the sweep's.
+			if _, err := tx.Exec("INSERT INTO "+gcDeadRecordsTable+"(record_id) VALUES (?)", id); err != nil {
 				return GarbageReceipt{}, fmt.Errorf("stage dead record id: %w", err)
 			}
 		}
