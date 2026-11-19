@@ -14,8 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-
-	_ "modernc.org/sqlite"
 )
 
 // ErrOwnerEvicted is the expected "this owner path was evicted" condition,
@@ -71,6 +69,12 @@ type GarbageReceipt struct {
 // OpEvict marks the eviction and GC entry points in the operation context.
 // The authorization predicate is the append gate's; the kind is descriptive.
 const OpEvict OperationKind = "evict"
+
+// gcDeadRecordsTable is the session-local staging table the GC sweep loads
+// dead record ids into. Created and dropped through the dialect so the
+// temp-table form stays backend-owned; referenced by unqualified name in
+// the sweep statements, which is portable.
+const gcDeadRecordsTable = "dead_records"
 
 // ensureEvictionAuthorized mirrors ensureAppendAuthorized: the kernel's
 // authorization model is in-process cooperative, and eviction is exactly
@@ -287,7 +291,7 @@ func (s *SQLiteTraceStore) CollectGarbage(ctx context.Context, auth AppendContex
 	}
 	defer tx.Rollback()
 
-	receipt, err := s.collectGarbageInTx(tx)
+	receipt, err := s.collectGarbageInTx(ctx, tx)
 	if err != nil {
 		return GarbageReceipt{}, err
 	}
@@ -297,7 +301,7 @@ func (s *SQLiteTraceStore) CollectGarbage(ctx context.Context, auth AppendContex
 	return receipt, nil
 }
 
-func (s *SQLiteTraceStore) collectGarbageInTx(tx *sql.Tx) (GarbageReceipt, error) {
+func (s *SQLiteTraceStore) collectGarbageInTx(ctx context.Context, tx *sql.Tx) (GarbageReceipt, error) {
 	receipt := GarbageReceipt{
 		SnapshotScan: "best-effort scan for sha256:<64hex> record ids embedded in checkpoint_snapshots.snapshot payloads",
 	}
@@ -429,17 +433,20 @@ func (s *SQLiteTraceStore) collectGarbageInTx(tx *sql.Tx) (GarbageReceipt, error
 	// order: path_entries and record_edges reference records, records and
 	// contexts and path_entries and frontiers reference append_intents.
 	if len(dead) > 0 {
-		// Temp tables live on the pooled connection: drop-then-create makes
+		// Temp staging lives on the pooled connection: drop-then-create makes
 		// the sweep safe even if a previous run's cleanup was skipped.
-		if _, err := tx.Exec("DROP TABLE IF EXISTS temp.dead_records"); err != nil {
+		if err := s.dialect.dropTempTableIfExists(ctx, tx, gcDeadRecordsTable); err != nil {
 			return GarbageReceipt{}, fmt.Errorf("clear staged dead records: %w", err)
 		}
-		if _, err := tx.Exec("CREATE TEMP TABLE IF NOT EXISTS dead_records(record_id TEXT PRIMARY KEY)"); err != nil {
+		if err := s.dialect.createTempTableIfNotExists(ctx, tx, gcDeadRecordsTable, "record_id TEXT PRIMARY KEY"); err != nil {
 			return GarbageReceipt{}, fmt.Errorf("stage dead records: %w", err)
 		}
-		defer tx.Exec("DROP TABLE IF EXISTS temp.dead_records")
+		defer func() { _ = s.dialect.dropTempTableIfExists(ctx, tx, gcDeadRecordsTable) }()
 		for _, id := range dead {
-			if _, err := tx.Exec("INSERT INTO temp.dead_records(record_id) VALUES (?)", id); err != nil {
+			// The staging table is referenced by its unqualified name, per
+			// the dialect contract: where the backend materializes the temp
+			// table is the dialect's business, not the sweep's.
+			if _, err := tx.Exec("INSERT INTO "+gcDeadRecordsTable+"(record_id) VALUES (?)", id); err != nil {
 				return GarbageReceipt{}, fmt.Errorf("stage dead record id: %w", err)
 			}
 		}

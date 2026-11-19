@@ -12,8 +12,6 @@ import (
 	"fmt"
 
 	"strconv"
-
-	_ "modernc.org/sqlite"
 )
 
 func (s *SQLiteTraceStore) resolveGroupContext(
@@ -27,7 +25,7 @@ func (s *SQLiteTraceStore) resolveGroupContext(
 		}
 	}
 
-	draft := defaultContextDraft()
+	draft := defaultContextDraft(s.substrateRef)
 	if group.RetainedContext != nil {
 		draft = *group.RetainedContext
 	}
@@ -78,9 +76,9 @@ func (s *SQLiteTraceStore) readContext(gctx context.Context, contextID string) (
 	return ctx, nil
 }
 
-func defaultContextDraft() RetainedContext {
+func defaultContextDraft(substrateRef string) RetainedContext {
 	return RetainedContext{
-		SubstrateRef: "sqlite.local.v1",
+		SubstrateRef: substrateRef,
 		Containment:  ContainContained,
 	}
 }
@@ -148,12 +146,16 @@ func contextEqual(a, b RetainedContext) bool {
 //
 // Python distinguishes three cases in `_context_draft_for_group` — an explicit
 // draft, a reuse reference by context id, or nothing at all — and the "nothing"
-// case still carries the defaults (substrate_ref "sqlite.local.v1", containment
+// case still carries the store's defaults (substrate_ref and containment
 // "contained"). Go represents all three with one pointer, so which one it is has to
 // be inferred the same way the rest of the store infers it: an id with no substrate
 // ref is a reuse reference.
-func contextDraftJSON(rc *RetainedContext) map[string]any {
-	defaults := defaultContextDraft()
+//
+// substrateRef is the store's configured default (DefaultSubstrateRef unless
+// overridden at open); it is threaded through rather than global so a store on
+// a different substrate digests its batches with its own ref.
+func contextDraftJSON(rc *RetainedContext, substrateRef string) map[string]any {
+	defaults := defaultContextDraft(substrateRef)
 	draft := map[string]any{
 		"active_binding_refs":       []string{},
 		"capability_witness_refs":   []string{},
@@ -188,7 +190,7 @@ func (s *SQLiteTraceStore) resolveGroupContextTx(
 		}
 	}
 
-	draft := defaultContextDraft()
+	draft := defaultContextDraft(s.substrateRef)
 	if group.RetainedContext != nil {
 		draft = *group.RetainedContext
 	}

@@ -11,8 +11,6 @@ import (
 	"fmt"
 
 	"strconv"
-
-	_ "modernc.org/sqlite"
 )
 
 // PublishFrontier publishes a retained owner-prefix frontier through the append path.
@@ -163,7 +161,7 @@ func (s *SQLiteTraceStore) publishFrontierInTx(tx *sql.Tx, ctx OperationContext,
 		ContextID:               fmt.Sprintf("ctx:%s:frontier", intent),
 		CapabilityWitnessRefs:   ctx.PresentedAuthorityRefs,
 		SemanticEnvironmentRefs: []string{ctx.SchemaEnvironmentRef},
-		SubstrateRef:            "sqlite.local.v1",
+		SubstrateRef:            s.substrateRef,
 		Containment:             ContainContained,
 	}
 

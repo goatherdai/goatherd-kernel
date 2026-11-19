@@ -9,10 +9,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"sync"
-
-	_ "modernc.org/sqlite"
 )
 
 // ErrUnknownFrontier is the expected "no retained cutoff for this frontier id"
@@ -53,12 +50,22 @@ func (e *UnknownFactError) Error() string { return e.msg }
 
 const witnessTraceOwnerID = "kernel:witness"
 
-// SQLiteTraceStore is the canonical TraceStore implementation backed by SQLite.
+// SQLiteTraceStore is the canonical TraceStore implementation backed by
+// SQLite. All backend-specific behavior is delegated to its dialect; the
+// store methods themselves speak portable SQL through that seam, which is
+// what keeps the storage family swappable (see dialect.go, store_config.go).
 type SQLiteTraceStore struct {
 	path string
 	db   *sql.DB
 	mu   sync.Mutex
-	bus  *EffectBus // optional; nil = no real-time publishing
+	// dialect is the backend seam resolved at open; every catalog probe,
+	// conflict-clause statement, and connection concern routes through it.
+	dialect dialect
+	// substrateRef is recorded in retained contexts, witness bodies, and
+	// frontier facts that do not carry an explicit substrate reference.
+	// DefaultSubstrateRef unless overridden at open.
+	substrateRef string
+	bus          *EffectBus // optional; nil = no real-time publishing
 	// checkpointBlobLimit bounds the caller snapshot bytes persisted per
 	// checkpoint (plan 05 §4). Zero means DefaultCheckpointBlobLimit.
 	checkpointBlobLimit int64
@@ -68,7 +75,7 @@ type SQLiteTraceStore struct {
 	// hasEvictedPaths records whether the evicted_paths table exists in
 	// this database, fixed once at open: createSchema always creates it on
 	// a read-write open, and the read-only opener verifies the schema. The
-	// tombstone probe uses it to skip the sqlite_master check on hot paths.
+	// tombstone probe uses it to skip the catalog check on hot paths.
 	hasEvictedPaths bool
 	// hasNamedBlobs records whether the named_blobs table exists, fixed at
 	// open. A database written before named blobs opens read-only without
@@ -110,39 +117,11 @@ const DefaultCheckpointBlobLimit = 1 << 20
 
 // NewSQLiteTraceStore creates a new trace store at the given path.
 // Use ":memory:" for an in-memory store.
+//
+// It is the SQLite-specific shorthand for Open: new code should prefer
+// Open(StoreConfig{DSN: ...}) so the backend stays swappable.
 func NewSQLiteTraceStore(path string) (*SQLiteTraceStore, error) {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
-	}
-	db.SetMaxOpenConns(1) // SQLite is single-writer
-
-	// One pooled connection serializes every statement in-process: reads
-	// queue behind an open write transaction at the pool, so in-process
-	// SQLITE_BUSY never arises and the busy timeout below only governs
-	// cross-process lock contention. WAL is still worth setting because it
-	// is a persistent file property — cross-process readers (the trace UI's
-	// read-only opener, the Python reference) get snapshot reads instead of
-	// blocking on the writer's lock.
-	if _, err := db.Exec("PRAGMA journal_mode = WAL"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("set WAL mode: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("set busy timeout: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
-
-	s := &SQLiteTraceStore{path: path, db: db, hasEvictedPaths: true, hasNamedBlobs: true}
-	if err := s.createSchema(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("create schema: %w", err)
-	}
-	return s, nil
+	return OpenSQLite(StoreConfig{Backend: BackendSQLite, DSN: path})
 }
 
 // OpenSQLiteTraceStoreReadOnly opens an existing trace database for reading
@@ -152,47 +131,76 @@ func NewSQLiteTraceStore(path string) (*SQLiteTraceStore, error) {
 // a valid-looking empty trace. The database must already hold the full
 // trace schema, which is validated without DDL.
 //
-// The path names a file, never ":memory:". Paths containing SQLite URI
-// metacharacters ('?', '#') are percent-encoded, as the URI filename form
-// requires.
+// The path names a file, never ":memory:".
 func OpenSQLiteTraceStoreReadOnly(path string) (*SQLiteTraceStore, error) {
-	if path == "" || path == ":memory:" {
-		return nil, fmt.Errorf("read-only open requires an existing database file, not %q", path)
-	}
-	dsn := "file:" + url.PathEscape(path) + "?mode=ro"
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open sqlite read-only: %w", err)
-	}
-	db.SetMaxOpenConns(1) // SQLite is single-writer
-
-	// No journal-mode pragma: switching the journal mode writes to the
-	// database file, which a read-only connection must not do. The busy
-	// timeout and foreign-keys pragmas are connection-local and safe.
-	if _, err := db.Exec("PRAGMA busy_timeout = 5000"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("set busy timeout: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
-
-	s := &SQLiteTraceStore{path: path, db: db}
-	if err := s.validateExistingSchema(); err != nil {
-		db.Close()
+	if err := validateReadOnlyDSN(path); err != nil {
 		return nil, err
 	}
-	// Evicted paths can only exist if the retention schema does; one probe
-	// at open lets the tombstone checks skip the sqlite_master lookup.
-	var present int
-	if err := s.db.QueryRow("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'evicted_paths'").Scan(&present); err == nil {
-		s.hasEvictedPaths = true
+	return OpenSQLite(StoreConfig{Backend: BackendSQLite, DSN: path, ReadOnly: true})
+}
+
+// validateReadOnlyDSN rejects a read-only DSN that cannot name an existing
+// database file.
+func validateReadOnlyDSN(dsn string) error {
+	if dsn == "" || dsn == ":memory:" {
+		return fmt.Errorf("read-only open requires an existing database file, not %q", dsn)
 	}
-	// A pre-blob database has no named_blobs table. Blob reads then report
-	// absence instead of a raw SQL fault; writes still fail as read-only.
-	if err := s.db.QueryRow("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'named_blobs'").Scan(&present); err == nil {
-		s.hasNamedBlobs = true
+	return nil
+}
+
+// openWithDialect is the shared open path for every backend: connect through
+// the dialect, then either create the schema or validate an existing one.
+func openWithDialect(d dialect, cfg StoreConfig) (*SQLiteTraceStore, error) {
+	if cfg.ReadOnly {
+		if err := validateReadOnlyDSN(cfg.DSN); err != nil {
+			return nil, err
+		}
+	}
+
+	db, err := d.open(cfg.DSN, cfg.ReadOnly)
+	if err != nil {
+		if cfg.ReadOnly {
+			return nil, fmt.Errorf("open sqlite read-only: %w", err)
+		}
+		return nil, fmt.Errorf("open sqlite: %w", err)
+	}
+
+	s := &SQLiteTraceStore{
+		path:         cfg.DSN,
+		db:           db,
+		dialect:      d,
+		bus:          cfg.Bus,
+		substrateRef: DefaultSubstrateRef,
+	}
+	if cfg.SubstrateRef != "" {
+		s.substrateRef = cfg.SubstrateRef
+	}
+	if cfg.BlobLimit > 0 {
+		s.WithBlobLimit(cfg.BlobLimit)
+	}
+	if cfg.CheckpointBlobLimit > 0 {
+		s.WithCheckpointBlobLimit(cfg.CheckpointBlobLimit)
+	}
+
+	if cfg.ReadOnly {
+		tables, err := s.validateExistingSchema()
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		// Evicted paths can only exist if the retention schema does, and
+		// named blobs only if the blob schema does; one catalog read at
+		// open lets the later probes skip the lookup entirely.
+		s.hasEvictedPaths = tables["evicted_paths"]
+		s.hasNamedBlobs = tables["named_blobs"]
+		return s, nil
+	}
+
+	s.hasEvictedPaths = true
+	s.hasNamedBlobs = true
+	if err := s.createSchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("create schema: %w", err)
 	}
 	return s, nil
 }

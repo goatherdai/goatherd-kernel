@@ -11,8 +11,6 @@ import (
 	"sort"
 
 	"strings"
-
-	_ "modernc.org/sqlite"
 )
 
 // NonNilStrings returns an empty (non-nil) slice for nil input.

@@ -4,6 +4,28 @@ Notable changes to `shepherd-kernel-go`. This project follows
 [Semantic Versioning](https://semver.org/); while pre-1.0, minor releases may
 contain breaking changes, which are called out below.
 
+## [Unreleased]
+
+The trace store gained a storage-backend seam. New API: `Open(StoreConfig)`,
+`OpenSQLite(StoreConfig)`, the `TraceStore` interface (the backend contract),
+the `Backend` name type, and `StoreConfig` (DSN, read-only, bus, blob and
+checkpoint limits, substrate ref) — the former `WithBus`/`WithBlobLimit`/
+`WithCheckpointBlobLimit` builder options are all expressible in config.
+`NewSQLiteTraceStore` and `OpenSQLiteTraceStoreReadOnly` keep their exact
+signatures as shims over the new path, so existing callers are unaffected.
+
+Internally, everything SQLite-specific (driver registration, pragmas,
+single-writer pool, read-only URI form, catalog probes, conflict-clause
+syntax, temp staging tables) moved behind one `dialect` seam
+(`dialect.go`, `dialect_sqlite.go`); the store methods now speak portable
+SQL, and a CI gate test (`TestNoBackendDialectLeakage`) fails if backend
+dialect appears outside the dialect files. The default substrate reference
+is now the named constant `DefaultSubstrateRef` ("sqlite.local.v1",
+unchanged) and overridable per store via `StoreConfig.SubstrateRef`; record
+and context ids digest over it, so overriding forks id space by design.
+No behavior change for any existing store; the full law suite passes
+unchanged.
+
 ## [v0.21.0] - 2026-11-06
 
 Named durable blobs for payloads that should not inline into the trace

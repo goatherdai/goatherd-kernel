@@ -211,6 +211,29 @@ ids, err := store.PreviewRecordIDs(ctx, trace.TrustedAppendContext, batch)  // D
 ro, err := trace.OpenSQLiteTraceStoreReadOnly(path)
 ```
 
+### Storage backends
+
+`NewSQLiteTraceStore` is the SQLite shorthand. The backend-neutral entry
+point is `Open`, which takes a `StoreConfig` (backend, DSN, read-only,
+limits, bus, substrate ref) and returns the `trace.TraceStore` interface —
+program against that and the storage family stays swappable:
+
+```go
+store, err := trace.Open(trace.StoreConfig{
+    DSN:         path,               // file path, or ":memory:" for in-process
+    ReadOnly:    false,
+    Bus:         bus,                // optional, replaces store.WithBus
+    BlobLimit:   1 << 20,            // optional, replaces store.WithBlobLimit
+    SubstrateRef: "custom.v1",       // optional, overrides the recorded substrate
+})
+```
+
+All SQLite-specific behavior lives behind one internal seam
+(`dialect_sqlite.go`): pragmas, catalog probes, conflict-clause syntax, and
+connection setup. New backends implement the `dialect` interface and inherit
+the store's laws; a CI gate test keeps backend-specific code from leaking
+outside the dialect files.
+
 Every store call takes a Go `context.Context` first — cancellation and
 deadlines reach the SQL layer — with the trace-authority context
 (`TrustedAppendContext` / `TrustedReadContext`) second.

@@ -61,9 +61,9 @@ func ReadCompletedMaterialization(store *SQLiteTraceStore, intentID string) (dig
 // a malformed receipt — which the Python reference and later replays are
 // expected to decode as canonical JSON — can never reach the NOT NULL column
 // unchecked. The insert races only with a concurrent completion of the
-// same intent; INSERT OR IGNORE plus a digest comparison decides replays the
-// same way Python's IntegrityError branch does, without matching driver
-// error strings.
+// same intent; an ignore-on-conflict insert plus a digest comparison decides
+// replays the same way Python's IntegrityError branch does, without matching
+// driver error strings.
 func RecordCompletedMaterialization(store *SQLiteTraceStore, intentID, digest, receiptJSON string) error {
 	if strings.TrimSpace(receiptJSON) == "" {
 		return NewTraceStoreError("materialization receipt JSON is required")
@@ -75,8 +75,10 @@ func RecordCompletedMaterialization(store *SQLiteTraceStore, intentID, digest, r
 	store.mu.Lock()
 	defer store.mu.Unlock()
 
-	res, err := store.db.Exec(
-		"INSERT OR IGNORE INTO materialization_intents(materialize_intent_id, request_digest, receipt_json) VALUES (?, ?, ?)",
+	res, err := store.dialect.insertOrIgnore(
+		context.Background(),
+		store.db,
+		"INSERT INTO materialization_intents(materialize_intent_id, request_digest, receipt_json) VALUES (?, ?, ?)",
 		intentID, digest, receiptJSON,
 	)
 	if err != nil {

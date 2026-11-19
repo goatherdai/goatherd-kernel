@@ -60,10 +60,11 @@ func PersistCheckpointBlob(gctx context.Context, store *SQLiteTraceStore, checkp
 	if snapshot == nil {
 		snapshot = []byte{}
 	}
-	_, err = store.db.ExecContext(gctx, `
-		INSERT OR REPLACE INTO checkpoint_snapshots
+	_, err = store.dialect.insertOrReplace(gctx, store.db, `
+		INSERT INTO checkpoint_snapshots
 		(checkpoint_id, scope_id, seq, state_json, snapshot, created_at_unixnano)
 		VALUES (?, ?, ?, ?, ?, ?)`,
+		[]string{"checkpoint_id"},
 		checkpointID, scopeID, int64(seq), string(stateJSON), snapshot, createdAt.UnixNano())
 	if err != nil {
 		return fmt.Errorf("persist checkpoint snapshot: %w", err)
