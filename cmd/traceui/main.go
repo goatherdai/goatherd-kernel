@@ -22,7 +22,8 @@ import (
 )
 
 func main() {
-	db := flag.String("db", "", "path to the trace database (required)")
+	backend := flag.String("backend", "sqlite", "trace store backend: sqlite or postgres")
+	db := flag.String("db", "", "trace store DSN: file path (sqlite) or connection URL (postgres)")
 	addr := flag.String("addr", "127.0.0.1:8321", "listen address")
 	flag.Parse()
 
@@ -32,11 +33,17 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Read-only opener: no journal-mode pragma, no schema creation, and a
-	// schema check on the existing file — a viewer pointed at a wrong path
+	// Read-only opener on either backend: no schema creation and a schema
+	// check against the existing store — a viewer pointed at a wrong path
 	// fails loudly, never modifies a valid trace, and never invents an
-	// empty one.
-	store, err := trace.OpenSQLiteTraceStoreReadOnly(*db)
+	// empty one. On PostgreSQL the read-only open sets
+	// default_transaction_read_only=on, so the viewer's credentials can be
+	// a role that cannot write.
+	store, err := trace.Open(trace.StoreConfig{
+		Backend:  trace.Backend(*backend),
+		DSN:      *db,
+		ReadOnly: true,
+	})
 	if err != nil {
 		log.Fatalf("traceui: open %s: %v", *db, err)
 	}
