@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -38,6 +39,19 @@ const retentionSchemaMarkerKey = "schema:evicted_paths"
 // still open read-only. createSchema adds the marker on every read-write
 // open.
 const blobSchemaMarkerKey = "schema:named_blobs"
+
+// SchemaVersion is the schema generation this binary writes. It is stamped
+// into meta as schema:version on every read-write open and checked on every
+// open: a database stamped with a HIGHER version was written by a newer
+// kernel and is refused (its schema may carry assumptions this binary does
+// not know — silently serving it would be a plausible wrong answer).
+// Lower or absent versions are the pre-versioning history; the marker-gated
+// additions below remain the per-feature mechanism, and the stamp is the
+// coarse generation marker ops tooling (migration, backup verification)
+// reads.
+const SchemaVersion = 1
+
+const schemaVersionKey = "schema:version"
 
 // validateExistingSchema checks the backend catalog for the expected tables
 // without running any DDL. It is the read-only counterpart of createSchema:
@@ -83,7 +97,37 @@ func (s *SQLiteTraceStore) validateExistingSchema() (map[string]bool, error) {
 	if err == nil && !tables["named_blobs"] {
 		return nil, fmt.Errorf("not a trace database: missing table: named_blobs")
 	}
+
+	// Version gate: a database stamped by a newer kernel is refused rather
+	// than served with assumptions this binary does not share.
+	if err := s.checkSchemaVersion(); err != nil {
+		return nil, err
+	}
 	return tables, nil
+}
+
+// checkSchemaVersion refuses databases stamped by a newer kernel. Callers
+// run it after the meta table is known to exist (createSchema, or the
+// read-only validation). An unstamped database is the pre-versioning
+// history and opens with the marker-gated feature checks alone.
+func (s *SQLiteTraceStore) checkSchemaVersion() error {
+	var raw string
+	err := s.db.QueryRow("SELECT value FROM meta WHERE key = ?", schemaVersionKey).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	v, perr := strconv.Atoi(raw)
+	if perr != nil {
+		return fmt.Errorf("schema version %q is not a number", raw)
+	}
+	if v > SchemaVersion {
+		return fmt.Errorf("trace database schema version %d is newer than this kernel supports (%d); upgrade the kernel",
+			v, SchemaVersion)
+	}
+	return nil
 }
 
 // schemaDDL is the portable table set the store methods assume. It runs
@@ -219,6 +263,9 @@ func (s *SQLiteTraceStore) createSchema() error {
 	}
 	seed := "INSERT INTO meta(key, value) VALUES (?, ?)"
 	if _, err := s.dialect.insertOrIgnore(ctx, s.db, seed, "next_commit_seq", "0"); err != nil {
+		return err
+	}
+	if _, err := s.dialect.insertOrIgnore(ctx, s.db, seed, schemaVersionKey, fmt.Sprintf("%d", SchemaVersion)); err != nil {
 		return err
 	}
 	if _, err := s.dialect.insertOrIgnore(ctx, s.db, seed, retentionSchemaMarkerKey, "1"); err != nil {

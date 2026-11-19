@@ -202,6 +202,13 @@ func openWithDialect(d dialect, cfg StoreConfig) (*SQLiteTraceStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
+	// The stamp is written after the DDL (insertOrIgnore), so the check
+	// sees the final generation: a database from a newer kernel is refused
+	// even on a read-write open.
+	if err := s.checkSchemaVersion(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 

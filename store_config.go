@@ -7,6 +7,12 @@ package trace
 // constructors (NewSQLiteTraceStore, OpenSQLiteTraceStoreReadOnly) remain as
 // compatibility shims over this path.
 
+import (
+	"fmt"
+	"net/url"
+	"strings"
+)
+
 // DefaultSubstrateRef is the substrate reference recorded in retained
 // contexts, witness bodies, and frontier facts when the caller does not
 // supply one. It is stable across releases: record ids and context ids
@@ -78,4 +84,19 @@ func OpenSQLite(cfg StoreConfig) (*SQLiteTraceStore, error) {
 		return nil, err
 	}
 	return openWithDialect(d, cfg)
+}
+
+// Describe renders the config for diagnostics without leaking credentials:
+// a PostgreSQL URL keeps its scheme, host, and database but drops the
+// userinfo. A SQLite DSN is a path — it passes through.
+func (cfg StoreConfig) Describe() string {
+	if !strings.Contains(cfg.DSN, "://") {
+		return fmt.Sprintf("%s://%s", cfg.Backend, cfg.DSN)
+	}
+	u, err := url.Parse(cfg.DSN)
+	if err != nil {
+		return fmt.Sprintf("%s://<unparseable DSN>", cfg.Backend)
+	}
+	u.User = nil
+	return u.String()
 }
