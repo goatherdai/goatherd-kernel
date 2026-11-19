@@ -202,12 +202,23 @@ type dialect interface {
 	// caller's idempotency read then finds the stored receipt.
 	lockAppendIntent(ctx context.Context, q queryer, intentID string) error
 
-	// binaryColumnAsText renders a SQL expression that reads a binary
-	// column as text for in-process scanning. Backends differ in what a
-	// bytea-like column yields as Go text: the expression is the dialect's
-	// business. The payload is caller JSON text by kernel convention; a
-	// non-decodable payload fails the enclosing query loudly.
-	binaryColumnAsText(column string) string
+	// lockLivenessRecompute coordinates liveness-affecting transactions —
+	// appends (which make records reachable) and garbage collection (which
+	// reclaims unreachable ones) — for the transaction's duration. GC
+	// computes its dead set from reads taken inside its transaction; an
+	// append committing a path entry for a not-yet-reachable record after
+	// those reads would otherwise lose the entry to the sweep while its
+	// caller holds a successful receipt. Held by both sides, this makes
+	// their read/modify windows mutually exclusive. No-op on serializing
+	// backends.
+	lockLivenessRecompute(ctx context.Context, q queryer) error
+
+	// lockExistingOwnerOrdinalRow takes a transaction-length write lock on
+	// an owner's ordinal row if it exists (creating nothing), so eviction
+	// and append serialize on the same row before either reads owner state.
+	// A missing row locks nothing and reports no error. No-op on
+	// serializing backends.
+	lockExistingOwnerOrdinalRow(ctx context.Context, q queryer, ownerID string) error
 }
 
 // dialectFor resolves a Backend to its dialect. The empty backend selects

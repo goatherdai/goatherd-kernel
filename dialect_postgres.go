@@ -333,18 +333,35 @@ func (postgresDialect) dropTempTableIfExists(ctx context.Context, q queryer, nam
 // appends to a fresh owner would otherwise both read ordinal 0. With the
 // row pinned, one transaction's append blocks the other's allocation and
 // ordinals stay gapless.
+//
+// The retry covers a concurrent eviction deleting the row between this
+// transaction's INSERT (which skipped, conflicting with the doomed row)
+// and its SELECT (which then finds nothing): the next iteration inserts
+// afresh. Each retry makes progress — once the tombstone is committed the
+// row survives and the caller's tombstone check refuses the append — so a
+// small bound is enough and no backoff is needed.
 func (postgresDialect) lockOwnerOrdinalRows(ctx context.Context, q queryer, ownerIDs []string) error {
 	for _, owner := range ownerIDs {
-		if _, err := q.ExecContext(ctx,
-			`INSERT INTO owner_ordinals(trace_owner_id, next_ordinal) VALUES (?, 0)
-			 ON CONFLICT (trace_owner_id) DO NOTHING`, owner); err != nil {
-			return fmt.Errorf("materialize owner ordinal row: %w", err)
-		}
-		var next int
-		if err := q.QueryRowContext(ctx,
-			`SELECT next_ordinal FROM owner_ordinals WHERE trace_owner_id = ? FOR UPDATE`, owner,
-		).Scan(&next); err != nil {
-			return fmt.Errorf("lock owner ordinal row: %w", err)
+		for attempt := 0; ; attempt++ {
+			if _, err := q.ExecContext(ctx,
+				`INSERT INTO owner_ordinals(trace_owner_id, next_ordinal) VALUES (?, 0)
+				 ON CONFLICT (trace_owner_id) DO NOTHING`, owner); err != nil {
+				return fmt.Errorf("materialize owner ordinal row: %w", err)
+			}
+			var next int
+			err := q.QueryRowContext(ctx,
+				`SELECT next_ordinal FROM owner_ordinals WHERE trace_owner_id = ? FOR UPDATE`, owner,
+			).Scan(&next)
+			if err == sql.ErrNoRows {
+				if attempt >= 2 {
+					return fmt.Errorf("lock owner ordinal row: row for %q vanished %d times under concurrent eviction", owner, attempt+1)
+				}
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("lock owner ordinal row: %w", err)
+			}
+			break
 		}
 	}
 	return nil
@@ -374,9 +391,36 @@ func (postgresDialect) lockAppendIntent(ctx context.Context, q queryer, intentID
 	return nil
 }
 
-func (postgresDialect) binaryColumnAsText(column string) string {
-	// Kernel payloads on this column are canonical JSON text by convention;
-	// a non-decodable payload fails the enclosing scan loudly rather than
-	// silently weakening GC liveness.
-	return "convert_from(" + column + ", 'UTF8')"
+// lockLivenessRecompute takes the transaction-scoped advisory lock shared
+// by appends and garbage collection, so a GC sweep's dead set cannot go
+// stale against an append committing reachability mid-sweep. Both sides
+// take it first in their transactions; the fixed key serializes them
+// against each other while same-kind transactions queue harmlessly.
+func (postgresDialect) lockLivenessRecompute(ctx context.Context, q queryer) error {
+	if _, err := q.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(?, 0))`, gcCoordinationLockKey); err != nil {
+		return fmt.Errorf("lock liveness recompute: %w", err)
+	}
+	return nil
+}
+
+// gcCoordinationLockKey keys the append/GC coordination advisory lock. A
+// constant: the lock serializes kinds of transactions, not rows.
+const gcCoordinationLockKey = "goatherd-kernel:liveness-recompute"
+
+// lockExistingOwnerOrdinalRow locks an owner's ordinal row without
+// creating it, for callers (eviction) that must serialize against appends
+// but must not make an unknown owner look known — a materialized row would
+// flip EvictOwnerPath's "no such owner path" check.
+func (postgresDialect) lockExistingOwnerOrdinalRow(ctx context.Context, q queryer, ownerID string) error {
+	var next int
+	err := q.QueryRowContext(ctx,
+		`SELECT next_ordinal FROM owner_ordinals WHERE trace_owner_id = ? FOR UPDATE`, ownerID,
+	).Scan(&next)
+	if err == sql.ErrNoRows {
+		return nil // nothing to lock; the owner has no allocation state
+	}
+	if err != nil {
+		return fmt.Errorf("lock owner ordinal row: %w", err)
+	}
+	return nil
 }

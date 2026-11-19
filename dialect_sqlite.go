@@ -142,8 +142,12 @@ func (sqliteDialect) lockAppendIntent(ctx context.Context, q queryer, intentID s
 	return nil
 }
 
-func (sqliteDialect) binaryColumnAsText(column string) string {
-	return "CAST(" + column + " AS TEXT)"
+func (sqliteDialect) lockLivenessRecompute(ctx context.Context, q queryer) error {
+	return nil
+}
+
+func (sqliteDialect) lockExistingOwnerOrdinalRow(ctx context.Context, q queryer, ownerID string) error {
+	return nil
 }
 
 // rewriteSQLiteInsert prefixes the conflict keyword into a plain INSERT

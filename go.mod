@@ -2,7 +2,10 @@ module github.com/goatherdai/goatherd-kernel
 
 go 1.21
 
-require modernc.org/sqlite v1.29.10
+require (
+	github.com/jackc/pgx/v5 v5.6.0
+	modernc.org/sqlite v1.29.10
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -10,7 +13,6 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20221227161230-091c0ba34f0a // indirect
-	github.com/jackc/pgx/v5 v5.6.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v0.1.9 // indirect

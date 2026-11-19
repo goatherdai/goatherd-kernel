@@ -94,9 +94,6 @@ func TestPGInsertOrReplace(t *testing.T) {
 
 func TestPGDDLTranslation(t *testing.T) {
 	d := postgresDialect{}
-	if got := d.binaryColumnAsText("snapshot"); got != "convert_from(snapshot, 'UTF8')" {
-		t.Errorf("binaryColumnAsText = %q", got)
-	}
 
 	// execScript translates the portable DDL per backend and splits
 	// statements for the extended protocol. Verify against a recording

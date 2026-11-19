@@ -128,6 +128,13 @@ func (s *SQLiteTraceStore) appendInTx(goCtx context.Context, tx storeTx, ctx Ope
 	if err := validateBatchShape(batch, ctx); err != nil {
 		return AppendReceipt{}, false, err
 	}
+	// Cross-instance coordination first, in a fixed order shared with
+	// garbage collection: GC computes its dead set from reads inside its
+	// transaction, so an append committing reachability mid-sweep must
+	// queue behind the sweep (and vice versa) rather than interleave.
+	if err := s.dialect.lockLivenessRecompute(goCtx, tx); err != nil {
+		return AppendReceipt{}, false, err
+	}
 	// Serialize same-intent first-time appends on concurrent backends: the
 	// loser of the lock finds the winner's committed receipt in the
 	// idempotency read below and replays it, instead of racing to a
@@ -158,6 +165,46 @@ func (s *SQLiteTraceStore) appendInTx(goCtx context.Context, tx storeTx, ctx Ope
 	}
 	if err != sql.ErrNoRows {
 		return AppendReceipt{}, false, fmt.Errorf("query append intent: %w", err)
+	}
+
+	// Lock the allocation points before reading owner state. Only owners
+	// that will actually allocate records join the lock set — a zero-draft
+	// group must not materialize an ordinal row, or an owner that never
+	// appended would look known to EvictOwnerPath on backends that
+	// materialize. kernel:witness joins when any group allocates, because
+	// the witness inserts below allocate its ordinals. Sorted owner order
+	// makes the lock order global, so concurrent batches with overlapping
+	// owners cannot deadlock.
+	lockSet := make([]string, 0, len(batch.Groups)+1)
+	seenOwner := make(map[string]bool, len(batch.Groups)+1)
+	hasDrafts := false
+	for _, group := range batch.Groups {
+		if len(group.FactDrafts) == 0 {
+			continue
+		}
+		hasDrafts = true
+		owner := groupOwner(group)
+		if !seenOwner[owner] {
+			seenOwner[owner] = true
+			lockSet = append(lockSet, owner)
+		}
+	}
+	if hasDrafts && !seenOwner[witnessTraceOwnerID] {
+		seenOwner[witnessTraceOwnerID] = true
+		lockSet = append(lockSet, witnessTraceOwnerID)
+	}
+	sort.Strings(lockSet)
+	if len(lockSet) > 0 {
+		// Materialize-and-lock: on concurrent backends a first append to a
+		// fresh owner pins the row before reading it, or two racers would
+		// both read ordinal 0. The tombstone check below runs inside this
+		// locked window, so an eviction committing concurrently either
+		// precedes the check (append refused) or follows it (tombstone
+		// insert waits on the append's row lock; entries and tombstone
+		// cannot both commit).
+		if err := s.dialect.lockOwnerOrdinalRows(goCtx, tx, lockSet); err != nil {
+			return AppendReceipt{}, false, err
+		}
 	}
 
 	// An evicted path takes no appends until ReopenOwnerPath deletes the
@@ -242,25 +289,11 @@ func (s *SQLiteTraceStore) prepareAppend(goCtx context.Context, tx storeTx, batc
 	localFactIDs := make(map[string]string)
 	stagedNext := make(map[string]int)
 
-	// Pin the allocation points before reading them: every owner that will
-	// allocate ordinals (the batch's owners and kernel:witness, whose
-	// records the inserts below create) gets its ordinal row materialized
-	// and locked, then the global commit-sequence row. Sorted owner order
-	// makes the lock order global, so concurrent batches with overlapping
-	// owners cannot deadlock; on serializing backends these are no-ops.
-	owners := []string{witnessTraceOwnerID}
-	seenOwner := map[string]bool{witnessTraceOwnerID: true}
-	for _, group := range batch.Groups {
-		owner := groupOwner(group)
-		if !seenOwner[owner] {
-			seenOwner[owner] = true
-			owners = append(owners, owner)
-		}
-	}
-	sort.Strings(owners)
-	if err := s.dialect.lockOwnerOrdinalRows(goCtx, tx, owners); err != nil {
-		return nil, nil, nil, AppendReceipt{}, err
-	}
+	// Owner ordinal rows are already materialized and locked by the caller
+	// (appendInTx), inside the window the tombstone check shares. The
+	// commit-sequence meta row is locked here: the global counter is the
+	// last allocation point, after the (sorted) owner locks, completing a
+	// deadlock-free global order.
 	if err := s.dialect.lockCommitSeqRow(goCtx, tx); err != nil {
 		return nil, nil, nil, AppendReceipt{}, err
 	}
