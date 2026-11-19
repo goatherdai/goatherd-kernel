@@ -28,7 +28,7 @@ func (s *SQLiteTraceStore) PublishFrontier(ctx context.Context, auth AppendConte
 		return Frontier{}, fmt.Errorf("begin transaction: %w", err)
 	}
 
-	frontier, batch, receipt, isNew, err := s.publishFrontierInTx(tx, opCtx, spec)
+	frontier, batch, receipt, isNew, err := s.publishFrontierInTx(ctx, tx, opCtx, spec)
 	if err != nil {
 		tx.Rollback()
 		return Frontier{}, err
@@ -114,7 +114,7 @@ func (s *SQLiteTraceStore) ReadOwnerCutoff(ctx context.Context, frontierID strin
 // row. Alongside the frontier it returns the batch and receipt the append
 // produced and whether any records were newly written, so PublishFrontier
 // can publish bus events after commit the way Append does.
-func (s *SQLiteTraceStore) publishFrontierInTx(tx *sql.Tx, ctx OperationContext, spec FrontierSpec) (Frontier, AppendBatch, AppendReceipt, bool, error) {
+func (s *SQLiteTraceStore) publishFrontierInTx(goCtx context.Context, tx storeTx, ctx OperationContext, spec FrontierSpec) (Frontier, AppendBatch, AppendReceipt, bool, error) {
 	if spec.FrontierID == "" {
 		return Frontier{}, AppendBatch{}, AppendReceipt{}, false, fmt.Errorf("frontier_id is required")
 	}
@@ -183,7 +183,7 @@ func (s *SQLiteTraceStore) publishFrontierInTx(tx *sql.Tx, ctx OperationContext,
 		}},
 	}
 
-	receipt, isNew, err := s.appendInTx(tx, ctx, batch)
+	receipt, isNew, err := s.appendInTx(goCtx, tx, ctx, batch)
 	if err != nil {
 		return Frontier{}, AppendBatch{}, AppendReceipt{}, false, err
 	}
@@ -314,7 +314,7 @@ func intFromPayload(payload map[string]any, key string) (int, error) {
 	}
 }
 
-func (s *SQLiteTraceStore) readOwnerCutoffTx(tx *sql.Tx, frontierID string) (Frontier, error) {
+func (s *SQLiteTraceStore) readOwnerCutoffTx(tx storeTx, frontierID string) (Frontier, error) {
 	row := tx.QueryRow("SELECT * FROM frontiers WHERE frontier_id = ?", frontierID)
 	var f Frontier
 	var publisherID, appendIntentID string
@@ -330,7 +330,7 @@ func (s *SQLiteTraceStore) readOwnerCutoffTx(tx *sql.Tx, frontierID string) (Fro
 	return f, nil
 }
 
-func (s *SQLiteTraceStore) readLatestFactOnPathTx(tx *sql.Tx, factID, ownerID string) (Record, error) {
+func (s *SQLiteTraceStore) readLatestFactOnPathTx(tx storeTx, factID, ownerID string) (Record, error) {
 	row := tx.QueryRow(`
 		SELECT records.*, path_entries.path_ref, path_entries.path_ordinal,
 		       path_entries.retained_context_ref, path_entries.kind_label

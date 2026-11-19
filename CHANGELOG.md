@@ -26,6 +26,32 @@ and context ids digest over it, so overriding forks id space by design.
 No behavior change for any existing store; the full law suite passes
 unchanged.
 
+### PostgreSQL backend (spike, `Backend = "postgres"`)
+
+A working PostgreSQL dialect (`dialect_postgres.go`, pgx v5) passes the
+entire law suite unchanged, plus a concurrency gate: 8-goroutine appends to
+one owner through a real connection pool yield gapless ordinals, unique
+commit receipts, and idempotent same-intent racing — the guarantees SQLite
+got from its single-writer connection now come from row locks on the
+ordinal and commit-seq rows and an advisory lock on the append intent.
+
+Dialect mechanics: portable `?` statements are rebound to `$n` at the
+execution boundary (quote-aware; literals survive); the schema DDL
+translates `BLOB`→`BYTEA`, `INTEGER`→`BIGINT`, and
+`CURRENT_TIMESTAMP`→`CURRENT_TIMESTAMP::text` and is split per statement
+for the extended protocol; read-only opens set
+`default_transaction_read_only=on`; the GC snapshot scan reads binary
+columns via `convert_from(..., 'UTF8')` (kernel payloads are canonical
+JSON text by convention).
+
+Run the suite against PostgreSQL with
+`KERNEL_PG_DSN=postgres://...?sslmode=disable go test .`; without the
+variable the PG-specific tests skip and everything stays SQLite. Consumers
+bumping to a kernel with the PG dialect need a `go mod tidy` (pgx joins
+`go.sum` even for SQLite-only callers — the dialect is an in-package
+implementation, not a separate module; splitting it behind a build tag is
+deferred to the backend-stabilization pass).
+
 ## [v0.21.0] - 2026-11-06
 
 Named durable blobs for payloads that should not inline into the trace

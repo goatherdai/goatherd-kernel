@@ -21,6 +21,10 @@ type sqliteDialect struct{}
 
 func (sqliteDialect) name() string { return string(BackendSQLite) }
 
+func (sqliteDialect) bind(db *sql.DB) storeDB {
+	return passthroughDB{db}
+}
+
 func (sqliteDialect) open(dsn string, readOnly bool) (*sql.DB, error) {
 	path := dsn
 	if readOnly {
@@ -90,7 +94,7 @@ func (sqliteDialect) listTables(ctx context.Context, q queryer) (map[string]bool
 }
 
 func (sqliteDialect) insertOrIgnore(ctx context.Context, q queryer, stmt string, args ...any) (sql.Result, error) {
-	rewritten, err := rewriteInsert(stmt, "OR IGNORE")
+	rewritten, err := rewriteSQLiteInsert(stmt, "OR IGNORE")
 	if err != nil {
 		return nil, err
 	}
@@ -98,14 +102,14 @@ func (sqliteDialect) insertOrIgnore(ctx context.Context, q queryer, stmt string,
 }
 
 func (sqliteDialect) insertOrReplace(ctx context.Context, q queryer, stmt string, conflictCols []string, args ...any) (sql.Result, error) {
-	rewritten, err := rewriteInsert(stmt, "OR REPLACE")
+	rewritten, err := rewriteSQLiteInsert(stmt, "OR REPLACE")
 	if err != nil {
 		return nil, err
 	}
 	return q.ExecContext(ctx, rewritten, args...)
 }
 
-func (sqliteDialect) execScript(ctx context.Context, db *sql.DB, script string) error {
+func (sqliteDialect) execScript(ctx context.Context, db storeDB, script string) error {
 	_, err := db.ExecContext(ctx, script)
 	return err
 }
@@ -122,11 +126,32 @@ func (sqliteDialect) dropTempTableIfExists(ctx context.Context, q queryer, name 
 	return err
 }
 
-// rewriteInsert prefixes the conflict keyword into a plain INSERT statement:
-// "INSERT INTO t ..." becomes "INSERT OR IGNORE INTO t ..." (or OR REPLACE).
-// The store supplies only portable statements, so the rewrite is anchored to
-// the leading keyword; anything else is a caller bug and fails loudly.
-func rewriteInsert(stmt, conflict string) (string, error) {
+// Locks are no-ops on SQLite: the dialect's single pooled connection
+// serializes every statement in-process, so ordinal and commit-seq
+// allocation cannot interleave and the idempotency read cannot race.
+
+func (sqliteDialect) lockOwnerOrdinalRows(ctx context.Context, q queryer, ownerIDs []string) error {
+	return nil
+}
+
+func (sqliteDialect) lockCommitSeqRow(ctx context.Context, q queryer) error {
+	return nil
+}
+
+func (sqliteDialect) lockAppendIntent(ctx context.Context, q queryer, intentID string) error {
+	return nil
+}
+
+func (sqliteDialect) binaryColumnAsText(column string) string {
+	return "CAST(" + column + " AS TEXT)"
+}
+
+// rewriteSQLiteInsert prefixes the conflict keyword into a plain INSERT
+// statement: "INSERT INTO t ..." becomes "INSERT OR IGNORE INTO t ..."
+// (or OR REPLACE). The store supplies only portable statements, so the
+// rewrite is anchored to the leading keyword; anything else is a caller
+// bug and fails loudly.
+func rewriteSQLiteInsert(stmt, conflict string) (string, error) {
 	trimmed := strings.TrimLeft(stmt, " \t\r\n")
 	if !strings.HasPrefix(trimmed, "INSERT ") {
 		return "", fmt.Errorf("dialect conflict clause expects a plain INSERT statement, got %q", firstLine(stmt))

@@ -56,7 +56,7 @@ func groupOwner(group AppendGroup) string {
 	return group.TraceOwnerID
 }
 
-func (s *SQLiteTraceStore) readFactTx(tx *sql.Tx, factID string) (Record, error) {
+func (s *SQLiteTraceStore) readFactTx(tx storeTx, factID string) (Record, error) {
 	row := tx.QueryRow(`
 		SELECT records.*, path_entries.path_ref, path_entries.path_ordinal,
 		       path_entries.retained_context_ref, path_entries.kind_label
@@ -68,7 +68,7 @@ func (s *SQLiteTraceStore) readFactTx(tx *sql.Tx, factID string) (Record, error)
 	return scanRecord(row)
 }
 
-func (s *SQLiteTraceStore) readRecordTx(tx *sql.Tx, factID string) (Record, error) {
+func (s *SQLiteTraceStore) readRecordTx(tx storeTx, factID string) (Record, error) {
 	row := tx.QueryRow(`
 		SELECT records.*, '' AS trace_owner_id, -1 AS owner_ordinal,
 		       '' AS retained_context_ref, '' AS kind_label
@@ -76,13 +76,13 @@ func (s *SQLiteTraceStore) readRecordTx(tx *sql.Tx, factID string) (Record, erro
 	return scanRecord(row)
 }
 
-func (s *SQLiteTraceStore) factExistsTx(tx *sql.Tx, factID string) bool {
+func (s *SQLiteTraceStore) factExistsTx(tx storeTx, factID string) bool {
 	var count int
 	tx.QueryRow("SELECT 1 FROM records WHERE record_id = ?", factID).Scan(&count)
 	return count > 0
 }
 
-func (s *SQLiteTraceStore) nextOwnerOrdinalTx(tx *sql.Tx, ownerID string) (int, error) {
+func (s *SQLiteTraceStore) nextOwnerOrdinalTx(tx storeTx, ownerID string) (int, error) {
 	var ordinal int
 	err := tx.QueryRow("SELECT next_ordinal FROM owner_ordinals WHERE trace_owner_id = ?", ownerID).Scan(&ordinal)
 	if err == sql.ErrNoRows {
@@ -94,7 +94,7 @@ func (s *SQLiteTraceStore) nextOwnerOrdinalTx(tx *sql.Tx, ownerID string) (int, 
 	return ordinal, nil
 }
 
-func (s *SQLiteTraceStore) nextCommitSeqTx(tx *sql.Tx) (int, error) {
+func (s *SQLiteTraceStore) nextCommitSeqTx(tx storeTx) (int, error) {
 	var seq int
 	err := tx.QueryRow("SELECT value FROM meta WHERE key = 'next_commit_seq'").Scan(&seq)
 	if err != nil {
@@ -103,7 +103,7 @@ func (s *SQLiteTraceStore) nextCommitSeqTx(tx *sql.Tx) (int, error) {
 	return seq, nil
 }
 
-func (s *SQLiteTraceStore) insertFactRowTx(tx *sql.Tx, fact Record, commitReceipt, appendIntentID string) error {
+func (s *SQLiteTraceStore) insertFactRowTx(tx storeTx, fact Record, commitReceipt, appendIntentID string) error {
 	if fact.View == nil {
 		return &TraceStoreError{"path append requires record view metadata"}
 	}
@@ -125,7 +125,7 @@ func (s *SQLiteTraceStore) insertFactRowTx(tx *sql.Tx, fact Record, commitReceip
 	return err
 }
 
-func (s *SQLiteTraceStore) insertRecordIfMissingTx(tx *sql.Tx, fact Record, appendIntentID string) error {
+func (s *SQLiteTraceStore) insertRecordIfMissingTx(tx storeTx, fact Record, appendIntentID string) error {
 	if fact.Envelope.RecordID != fact.Envelope.Digest {
 		return &TraceStoreError{"record_id must equal digest"}
 	}

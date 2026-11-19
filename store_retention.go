@@ -110,7 +110,7 @@ func ownerEvicted(hasEvictedPaths bool, q rowQuerier, ownerID string) (bool, err
 }
 
 // ownerPathEvictedTx reports whether the eviction tombstone for ownerID exists.
-func (s *SQLiteTraceStore) ownerPathEvictedTx(tx *sql.Tx, ownerID string) (bool, error) {
+func (s *SQLiteTraceStore) ownerPathEvictedTx(tx storeTx, ownerID string) (bool, error) {
 	return ownerEvicted(s.hasEvictedPaths, tx, ownerID)
 }
 
@@ -301,7 +301,7 @@ func (s *SQLiteTraceStore) CollectGarbage(ctx context.Context, auth AppendContex
 	return receipt, nil
 }
 
-func (s *SQLiteTraceStore) collectGarbageInTx(ctx context.Context, tx *sql.Tx) (GarbageReceipt, error) {
+func (s *SQLiteTraceStore) collectGarbageInTx(ctx context.Context, tx storeTx) (GarbageReceipt, error) {
 	receipt := GarbageReceipt{
 		SnapshotScan: "best-effort scan for sha256:<64hex> record ids embedded in checkpoint_snapshots.snapshot payloads",
 	}
@@ -349,7 +349,7 @@ func (s *SQLiteTraceStore) collectGarbageInTx(ctx context.Context, tx *sql.Tx) (
 	// The root witness is live unconditionally.
 	live[RootWitnessRecordIDMust()] = true
 
-	if err := markSnapshotLiveRecordsTx(tx, live, &receipt); err != nil {
+	if err := s.markSnapshotLiveRecordsTx(ctx, tx, live, &receipt); err != nil {
 		return GarbageReceipt{}, err
 	}
 
@@ -530,9 +530,10 @@ var sha256RecordIDPattern = regexp.MustCompile(`sha256:[0-9a-f]{64}`)
 // is best-effort: one pass per snapshot extracting sha256-shaped ids, blind
 // to ids an encoding splits across escapes. A caller whose blobs are
 // binary-heavy must pin record ids itself (sidecar column or payload
-// convention) if checkpoint-aware liveness must be exact.
-func markSnapshotLiveRecordsTx(tx *sql.Tx, live map[string]bool, receipt *GarbageReceipt) error {
-	rows, err := tx.Query("SELECT CAST(snapshot AS TEXT) FROM checkpoint_snapshots")
+// convention) if checkpoint-aware liveness must be exact. How the binary
+// column reads as text is the dialect's business (binaryColumnAsText).
+func (s *SQLiteTraceStore) markSnapshotLiveRecordsTx(ctx context.Context, tx storeTx, live map[string]bool, receipt *GarbageReceipt) error {
+	rows, err := tx.QueryContext(ctx, "SELECT "+s.dialect.binaryColumnAsText("snapshot")+" FROM checkpoint_snapshots")
 	if err != nil {
 		return fmt.Errorf("scan checkpoint snapshots: %w", err)
 	}

@@ -12,6 +12,7 @@ import (
 
 	"fmt"
 
+	"sort"
 	"time"
 )
 
@@ -30,7 +31,7 @@ func (s *SQLiteTraceStore) Append(ctx context.Context, auth AppendContext, batch
 		return AppendReceipt{}, fmt.Errorf("begin transaction: %w", err)
 	}
 
-	receipt, isNew, err := s.appendInTx(tx, opCtx, batch)
+	receipt, isNew, err := s.appendInTx(ctx, tx, opCtx, batch)
 	if err != nil {
 		tx.Rollback()
 		return AppendReceipt{}, err
@@ -123,8 +124,15 @@ func (s *SQLiteTraceStore) PreviewRecordIDs(ctx context.Context, auth AppendCont
 	return s.previewFactIDs(ctx, batch, opCtx)
 }
 
-func (s *SQLiteTraceStore) appendInTx(tx *sql.Tx, ctx OperationContext, batch AppendBatch) (AppendReceipt, bool, error) {
+func (s *SQLiteTraceStore) appendInTx(goCtx context.Context, tx storeTx, ctx OperationContext, batch AppendBatch) (AppendReceipt, bool, error) {
 	if err := validateBatchShape(batch, ctx); err != nil {
+		return AppendReceipt{}, false, err
+	}
+	// Serialize same-intent first-time appends on concurrent backends: the
+	// loser of the lock finds the winner's committed receipt in the
+	// idempotency read below and replays it, instead of racing to a
+	// duplicate-key error. A no-op on serializing backends.
+	if err := s.dialect.lockAppendIntent(goCtx, tx, batch.AppendIntentID); err != nil {
 		return AppendReceipt{}, false, err
 	}
 	batchDigest, err := batchDigest(batch, ctx, s.substrateRef)
@@ -166,7 +174,7 @@ func (s *SQLiteTraceStore) appendInTx(tx *sql.Tx, ctx OperationContext, batch Ap
 	}
 
 	// Prepare append
-	contexts, witnessPlans, facts, receipt, err := s.prepareAppend(tx, batch, ctx)
+	contexts, witnessPlans, facts, receipt, err := s.prepareAppend(goCtx, tx, batch, ctx)
 	if err != nil {
 		return AppendReceipt{}, false, err
 	}
@@ -223,7 +231,7 @@ func (s *SQLiteTraceStore) appendInTx(tx *sql.Tx, ctx OperationContext, batch Ap
 	return receipt, true, nil // true = new append
 }
 
-func (s *SQLiteTraceStore) prepareAppend(tx *sql.Tx, batch AppendBatch, ctx OperationContext) (
+func (s *SQLiteTraceStore) prepareAppend(goCtx context.Context, tx storeTx, batch AppendBatch, ctx OperationContext) (
 	contexts []RetainedContext,
 	witnessPlans []witnessPlan,
 	facts []Record,
@@ -233,6 +241,29 @@ func (s *SQLiteTraceStore) prepareAppend(tx *sql.Tx, batch AppendBatch, ctx Oper
 	stagedIDs := make(map[string]bool)
 	localFactIDs := make(map[string]string)
 	stagedNext := make(map[string]int)
+
+	// Pin the allocation points before reading them: every owner that will
+	// allocate ordinals (the batch's owners and kernel:witness, whose
+	// records the inserts below create) gets its ordinal row materialized
+	// and locked, then the global commit-sequence row. Sorted owner order
+	// makes the lock order global, so concurrent batches with overlapping
+	// owners cannot deadlock; on serializing backends these are no-ops.
+	owners := []string{witnessTraceOwnerID}
+	seenOwner := map[string]bool{witnessTraceOwnerID: true}
+	for _, group := range batch.Groups {
+		owner := groupOwner(group)
+		if !seenOwner[owner] {
+			seenOwner[owner] = true
+			owners = append(owners, owner)
+		}
+	}
+	sort.Strings(owners)
+	if err := s.dialect.lockOwnerOrdinalRows(goCtx, tx, owners); err != nil {
+		return nil, nil, nil, AppendReceipt{}, err
+	}
+	if err := s.dialect.lockCommitSeqRow(goCtx, tx); err != nil {
+		return nil, nil, nil, AppendReceipt{}, err
+	}
 
 	// Resolve starting ordinals
 	for _, group := range batch.Groups {
@@ -609,7 +640,7 @@ func nextCommitSeq(receipts []string) int {
 	return maxSeq
 }
 
-func (s *SQLiteTraceStore) validateCausalParentsTx(tx *sql.Tx, causedBy []string, stagedIDs map[string]bool) error {
+func (s *SQLiteTraceStore) validateCausalParentsTx(tx storeTx, causedBy []string, stagedIDs map[string]bool) error {
 	for _, id := range causedBy {
 		if stagedIDs[id] {
 			continue

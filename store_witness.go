@@ -6,7 +6,6 @@ package trace
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 
 	"fmt"
@@ -217,7 +216,7 @@ func witnessAnchor(w Record) WitnessAnchor {
 	}
 }
 
-func (s *SQLiteTraceStore) insertWitnessRecordIfMissingTx(tx *sql.Tx, plan witnessPlan, appendIntentID string) error {
+func (s *SQLiteTraceStore) insertWitnessRecordIfMissingTx(tx storeTx, plan witnessPlan, appendIntentID string) error {
 	if s.factExistsTx(tx, plan.recordID) {
 		existing, err := s.readFactTx(tx, plan.recordID)
 		if err != nil {
